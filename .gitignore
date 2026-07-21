@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# 빌드 산출물
+build/
+Debug/
+Release/
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+
+# PlatformIO
+.pio/
+
+# IDE
+.vscode/
+.idea/
+*.launch
+.settings/
+.metadata/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
