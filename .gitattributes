@@ -1,0 +1,14 @@
+# 줄바꿈 정규화 — PC 마다 core.autocrlf 설정이 달라도 인덱스는 항상 LF 로 통일된다.
+# (현재 인덱스는 이미 전부 LF 이므로 이 파일은 동작을 고정하는 역할)
+* text=auto
+
+# 바이너리 — 줄바꿈 변환이 파일을 깨뜨리므로 명시한다.
+# log/img/ 에 배선 사진과 파형 캡처가 들어갈 예정이라 특히 중요.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.pdf  binary
+*.elf  binary
+*.bin  binary
+*.hex  binary

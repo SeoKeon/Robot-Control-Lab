@@ -1,4 +1,4 @@
-# B-G431B-ESC1 개발환경 세팅 기록
+# 2026-08-05 B-G431B-ESC1 개발환경 세팅
 
 - 대상 보드: B-G431B-ESC1 (STM32G431CB)
 - 환경: Windows + VS Code + STM32Cube 확장 + CubeMX

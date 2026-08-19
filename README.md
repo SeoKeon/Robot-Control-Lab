@@ -12,6 +12,7 @@
 
 ### 2026-08
 
+- **08-19** 보드 공용 계층 분리 — 실험마다 복제되던 HAL/CMSIS 를 platform/g431-esc1 한 벌로, 빌드 경로 정리 ([log](log/2026-08-19-platform-layer-and-build-setup.md))
 - **08-05** B-G431B-ESC1 개발환경 세팅 — CubeCLT + VS Code로 빌드·플래싱·디버깅 완주 ([log](log/2026-08-05-dev-environment-setup.md))
 - **08-01** 도착 부품 테스트 — 전원공급장치 C.V/C.C/OCP, 멀티미터 전류 측정에서 단락 ([log](log/2026-08-01-parts-testing.md))
 
