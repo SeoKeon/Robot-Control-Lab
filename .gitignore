@@ -7,23 +7,38 @@ venv/
 
 # 빌드 산출물
 build/
-Debug/
-Release/
 *.o
 *.elf
 *.bin
 *.hex
 *.map
+*.su
 
 # PlatformIO
 .pio/
 
-# IDE
-.vscode/
+# IDE — 공유 가치가 있는 설정만 예외로 둔다
+# (슬래시가 중간에 있는 패턴은 루트에만 적용되므로 **/ 를 붙인다)
+**/.vscode/*
+!**/.vscode/settings.json
+!**/.vscode/c_cpp_properties.json
+!**/.vscode/extensions.json
+# launch.json 은 STM32CubeCLT 절대경로가 박혀 PC마다 달라서 커밋하지 않는다.
+# 설정 내용은 log/2026-08-05-dev-environment-setup.md 에 기록해 둔다.
 .idea/
 *.launch
-.settings/
 .metadata/
+
+# STM32Cube 로컬 상태 (CubeCLT 번들 캐시, CubeMX 임시파일)
+# .mxproject 는 CubeMX 프로젝트 상태이므로 커밋한다 — 여기 넣지 말 것.
+.settings/
+mx.scratch
+
+# CubeMX가 platform/g431-esc1 에서 재생성하지만 우리가 쓰지 않는 것들.
+# 빌드는 platform.cmake 의 add_lab_firmware() 로 한다.
+platform/g431-esc1/CMakeLists.txt
+platform/g431-esc1/CMakePresets.json
+platform/g431-esc1/cmake/stm32cubemx/
 
 # OS
 .DS_Store
