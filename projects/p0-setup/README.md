@@ -3,6 +3,7 @@
 **목표**: 실험대 세팅 — 배선, 마운트, 개발환경. Blink + 시리얼 "hello"가 완료 기준.
 
 - `src/blink_test/` — LED 블링크 (빌드→플래싱→디버깅 완주 확인). 실험 코드는 `app_main.c` 하나
+- `src/uart_hello/` — 시리얼 "hello" (진행 중). VCP 페리페럴 확인 대기 — UM2516 필요
 - `data/` — (이 단계에선 없음)
 - `docs/` — [핀맵과 보드 정보](docs/pinmap.md). 배선 사진은 아직 없음
 
