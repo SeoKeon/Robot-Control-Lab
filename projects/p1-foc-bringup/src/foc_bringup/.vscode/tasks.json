@@ -1,0 +1,35 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            // launch.json 의 preLaunchTask 가 이 label 을 부른다. 이름을 바꾸면 거기도 바꿀 것.
+            // type: "cmake" 는 CMake Tools 확장에 위임한다 — 상태바 빌드 버튼(F7)과
+            // 완전히 같은 cmake 를 쓰므로 build/Debug 캐시가 어긋나지 않는다.
+            "label": "build",
+            "type": "cmake",
+            "command": "build",
+            "preset": "Debug",
+            "targets": ["foc_bringup"],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": ["$gcc"],
+            "detail": "platform/g431-esc1 + app_main.c -> build/Debug/foc_bringup.elf"
+        },
+        {
+            // 디버거 없이 굽기만 할 때. STM32_Programmer_CLI 는 STM32CubeCLT 가 PATH 에 넣어준다.
+            "label": "flash",
+            "type": "shell",
+            "command": "STM32_Programmer_CLI",
+            "args": [
+                "-c", "port=SWD",
+                "-w", "build/Debug/foc_bringup.elf",
+                "-rst"
+            ],
+            "dependsOn": "build",
+            "problemMatcher": [],
+            "detail": "빌드 후 SWD 로 플래싱하고 리셋"
+        }
+    ]
+}
