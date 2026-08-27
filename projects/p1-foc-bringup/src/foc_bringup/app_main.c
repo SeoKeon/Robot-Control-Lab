@@ -1,85 +1,118 @@
 /**
- * p1-foc-bringup — 단계 (a) 정지 벡터 테스트
+ * p1-foc-bringup — 단계 (b) 왕복 스윕 (오픈루프 연속 구동)
  *
- * 회전시키지 않는다. 고정된 전기각으로 전압 벡터를 인가해서
- * 로터가 그 방향으로 "딸깍" 붙는지만 본다. 가장 안전한 첫 통전 테스트다.
+ * 전기각을 부드럽게 증감시켜 로터가 따라오게 한다. 속도를 단계적으로 올려
+ * 탈조(stall) 한계를 찾는다.
  *
- * 전기각을 60도씩 6번 옮겨 한 바퀴(전기각 360도)를 돌린다. 2회 반복.
- * 로터가 매번 새 위치로 스텝하면 3상 PWM 과 게이트 드라이버가 다 살아있는 것.
+ * ⚠️ 연속 회전을 하지 않는다 — 모터 선이 함께 돌아가는 구조라 기계각
+ *    약 180도가 가동 한계다. 감기면 납땜부가 뜯어진다.
+ *    그래서 기계각 +-MECH_AMP_DEG 범위를 왕복한다.
  *
- *   전기각 60도  =  기계각 60/7 = 8.57도       (12N14P, pole pairs 7)
- *   전기각 360도 =  기계각 51.43도
- *   12스텝 총    =  기계각 약 103도            <- 눈으로 보인다
+ * 단계 (a) 결과 반영:
+ *   - 12스텝(11전진) 기대 94도에 대해 실측 약 70도 -> 토크 부족으로 추종 지연
+ *     -> 변조 크기를 0.30 -> 0.45 로 올렸다 (선간 약 4.7V -> 약 0.22A @ 21Ω)
+ *   - PWM off 시 반대로 살짝 움직인 것은 유지토크 상실 후 코깅 디텐트(4.29도)
+ *     안착. 정상 동작이다.
  *
- * ── 실행 전 확인 ───────────────────────────────────────────────────────
- *   1. 전원 전류 리밋  0.8~1A     <- BKIN 이 없어 이게 유일한 보호장치
- *   2. 무부하 (프로펠러 없음), 모터 고정
- *   3. 12V 인가, UVW 결선 확인 (상간 21Ω 세 쌍 동일)
- * ──────────────────────────────────────────────────────────────────────
+ * 실행 전: 전류 리밋 0.8A, 무부하, 모터 고정, 선 여유 확인
  *
  * 결과 해석
- *   - 6위치로 또박또박 스텝  -> 정상. 다음은 단계 (b) 연속 회전
- *   - 떨기만 하고 안 움직임  -> 상 순서 문제. UVW 중 두 가닥을 바꿔볼 것
- *   - 한 방향만 움직이고 멈춤 -> 한 상이 안 나옴. 그 상의 게이트/납땜 확인
- *   - 아무 반응 없음         -> m 을 올려보고(0.4), 그래도 없으면 전원/MOE 확인
+ *   - 모든 속도에서 부드럽게 왕복        -> 오픈루프 성공. 다음은 전류 센싱
+ *   - 특정 속도부터 덜컹거리거나 멈춤    -> 그게 오픈루프 탈조 한계
+ *   - 저속에서도 못 따라옴               -> m 을 더 올리거나 결선 재확인
  */
 #include "bsp.h"
 
-#define POLE_PAIRS   7u
-#define STEPS        6u        /* 전기각 한 바퀴를 몇 등분할지 */
-#define REVS         2u        /* 전기각 몇 바퀴 */
-#define HOLD_MS      600u      /* 한 위치 유지 시간. 길게 하면 권선이 뜨거워진다 */
-#define M_AMP        0.30f     /* 변조 크기. 12V/21Ω 에서 선간 약 3.1V -> 약 0.15A */
+#define POLE_PAIRS      7.0f
+#define MECH_AMP_DEG    50.0f    /* 기계각 진폭. 총 가동 100도 (180도 제한 안쪽) */
+#define M_AMP           0.45f    /* 변조 크기. 약 0.22A @ 12V, 21Ω */
+#define UPDATE_MS       2u       /* 전기각 갱신 주기 500Hz */
+#define DEG2RAD         0.01745329f
 
-#define TWO_PI       6.2831853f
+/* 전기각 진폭 = 기계각 x 극쌍수 */
+#define EL_AMP_DEG      (MECH_AMP_DEG * POLE_PAIRS)
 
-static void countdown(uint32_t sec)
+/* 시험할 전기 속도 [deg/s]. 기계 속도 = /7, rpm = /6 */
+static const float speeds_el[] = { 200.0f, 400.0f, 800.0f, 1600.0f, 3200.0f };
+#define N_SPEEDS  (sizeof(speeds_el) / sizeof(speeds_el[0]))
+
+/** 전기각 a[deg] 위치로 벡터를 세운다. */
+static void hold(float a_deg)
 {
-    for (uint32_t i = sec; i > 0; i--) {
-        bsp_printf("  %lu...\r\n", (unsigned long)i);
-        bsp_led_toggle();
-        HAL_Delay(1000);
+    bsp_pwm_set_vector(a_deg * DEG2RAD, M_AMP);
+}
+
+/** 한 방향으로 from -> to 까지 el_dps 속도로 쓸어간다. */
+static void ramp(float from_deg, float to_deg, float el_dps)
+{
+    const float step = el_dps * ((float)UPDATE_MS / 1000.0f);
+    const float dir  = (to_deg > from_deg) ? 1.0f : -1.0f;
+    float a = from_deg;
+
+    while ((dir > 0.0f && a < to_deg) || (dir < 0.0f && a > to_deg)) {
+        hold(a);
+        HAL_Delay(UPDATE_MS);
+        a += dir * step;
     }
+    hold(to_deg);
 }
 
 void app_main(void)
 {
-    bsp_uart_puts("\r\n=== p1 단계(a) 정지 벡터 테스트 ===\r\n");
-    bsp_printf("SYSCLK    : %lu Hz\r\n", (unsigned long)HAL_RCC_GetSysClockFreq());
-    bsp_printf("PWM       : 20kHz center-aligned, ARR=%u, deadtime 1us\r\n", BSP_PWM_ARR);
-    bsp_printf("modulation: %d %% (선간 약 3.1V -> 약 0.15A @ 21ohm)\r\n", (int)(M_AMP * 100.0f));
-    bsp_printf("전기각 60도 = 기계각 %d.%02d도\r\n", 60 / POLE_PAIRS,
-               (int)((60.0f / POLE_PAIRS - (float)(60 / POLE_PAIRS)) * 100.0f));
-    bsp_uart_puts("\r\n[확인] 전류 리밋 0.8~1A / 무부하 / 모터 고정\r\n");
-    bsp_uart_puts("5초 후 통전한다. 중단하려면 전원을 끊을 것.\r\n\r\n");
+    bsp_uart_puts("\r\n=== p1 단계(b) 왕복 스윕 ===\r\n");
+    bsp_printf("PWM        : 20kHz, deadtime 1us, ARR=%u\r\n", BSP_PWM_ARR);
+    bsp_printf("modulation : %d %%  (약 0.22A @ 12V, 21ohm)\r\n", (int)(M_AMP * 100.0f));
+    bsp_printf("기계각 진폭: +-%d도 (총 %d도)  <- 선 감김 방지\r\n",
+               (int)MECH_AMP_DEG, (int)(2.0f * MECH_AMP_DEG));
+    bsp_printf("전기각 진폭: +-%d도\r\n", (int)EL_AMP_DEG);
+    bsp_uart_puts("\r\n[확인] 전류 리밋 0.8A / 무부하 / 모터 고정 / 선 여유\r\n");
+    bsp_uart_puts("5초 후 통전.\r\n\r\n");
 
-    countdown(5);
+    for (int i = 5; i > 0; i--) {
+        bsp_printf("  %d...\r\n", i);
+        bsp_led_toggle();
+        HAL_Delay(1000);
+    }
 
-    bsp_uart_puts("PWM 출력 시작\r\n\r\n");
     bsp_pwm_start();
 
-    for (uint32_t rev = 0; rev < REVS; rev++) {
-        for (uint32_t k = 0; k < STEPS; k++) {
-            const float theta_e = TWO_PI * (float)k / (float)STEPS;
-            const int   deg_e   = (int)(360 * k / STEPS);
+    /* 1) 한쪽 끝으로 천천히 정렬 — 갑자기 튀지 않게 */
+    bsp_uart_puts("정렬 중 (한쪽 끝으로)\r\n");
+    hold(0.0f);
+    HAL_Delay(500);
+    ramp(0.0f, -EL_AMP_DEG, 150.0f);
+    HAL_Delay(300);
 
-            bsp_pwm_set_vector(theta_e, M_AMP);
-            bsp_printf("rev %lu  step %lu/%u  전기각 %3d도\r\n",
-                       (unsigned long)(rev + 1), (unsigned long)(k + 1), STEPS, deg_e);
+    /* 2) 속도를 올리며 왕복 */
+    for (uint32_t s = 0; s < N_SPEEDS; s++) {
+        const float el = speeds_el[s];
+        const float mech_dps = el / POLE_PAIRS;
 
+        bsp_printf("\r\n[속도 %lu/%u] 전기 %d deg/s = 기계 %d deg/s = %d rpm\r\n",
+                   (unsigned long)(s + 1), (unsigned)N_SPEEDS,
+                   (int)el, (int)mech_dps, (int)(mech_dps / 6.0f));
+
+        for (uint32_t pass = 0; pass < 2u; pass++) {
             bsp_led_toggle();
-            HAL_Delay(HOLD_MS);
+            ramp(-EL_AMP_DEG, +EL_AMP_DEG, el);
+            HAL_Delay(150);
+            bsp_led_toggle();
+            ramp(+EL_AMP_DEG, -EL_AMP_DEG, el);
+            HAL_Delay(150);
         }
     }
 
+    /* 3) 중앙으로 되돌리고 정지 */
+    bsp_uart_puts("\r\n중앙 복귀\r\n");
+    ramp(-EL_AMP_DEG, 0.0f, 150.0f);
+    HAL_Delay(300);
     bsp_pwm_stop();
-    bsp_uart_puts("\r\nPWM 출력 정지 (6게이트 전부 off)\r\n\r\n");
 
+    bsp_uart_puts("PWM 정지 (6게이트 off)\r\n\r\n");
     bsp_uart_puts("결과 해석:\r\n");
-    bsp_uart_puts("  6위치로 또박또박 스텝  -> 정상. 다음은 단계(b) 연속 회전\r\n");
-    bsp_uart_puts("  떨기만 함              -> 상 순서. UVW 중 두 가닥 교체\r\n");
-    bsp_uart_puts("  한 방향만 움직이다 멈춤 -> 한 상 불량. 게이트/납땜 확인\r\n");
-    bsp_uart_puts("  아무 반응 없음         -> m 을 0.4 로 올려보고, 전원 확인\r\n");
+    bsp_uart_puts("  전 속도 부드럽게 왕복 -> 오픈루프 성공. 다음은 전류 센싱\r\n");
+    bsp_uart_puts("  특정 속도부터 덜컹     -> 그게 오픈루프 탈조 한계\r\n");
+    bsp_uart_puts("  저속에서도 못 따라옴   -> m 을 올리거나 결선 재확인\r\n");
     bsp_uart_puts("\r\n다시 하려면 리셋.\r\n");
 
     while (1) {
