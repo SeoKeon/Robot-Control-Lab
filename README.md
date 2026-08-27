@@ -12,6 +12,7 @@
 
 ### 2026-08
 
+- **08-27** 모터 첫 회전 🎉 — 오픈루프 왕복 스윕, 5단계 속도 추종·탈조 없음 (전류 0.2A 미만) ([log](log/2026-08-27-first-motor-rotation.md))
 - **08-27** p0 완료 — 시리얼 "hello" 뚫기. UM2516 에서 핀맵 확정, USART2(PB3/PB4) VCP 확인 ([log](log/2026-08-27-p0-complete-uart-hello.md))
 - **08-19** 보드 공용 계층 분리 — 실험마다 복제되던 HAL/CMSIS 를 platform/g431-esc1 한 벌로, 빌드 경로 정리 ([log](log/2026-08-19-platform-layer-and-build-setup.md))
 - **08-05** B-G431B-ESC1 개발환경 세팅 — CubeCLT + VS Code로 빌드·플래싱·디버깅 완주 ([log](log/2026-08-05-dev-environment-setup.md))

@@ -19,6 +19,8 @@
 
 이론 정리는 [2026-08-20 로그](../../log/2026-08-20-motor-anatomy-and-board-bringup.md) 참고.
 
+첫 회전 기록: [2026-08-27 로그](../../log/2026-08-27-first-motor-rotation.md) · 이론: [상보 PWM/데드타임](../../notes/2026-08-27-tim1-complementary-pwm-deadtime.md), [오픈루프와 FOC](../../notes/2026-08-27-openloop-vector-and-why-foc.md)
+
 ## 안전 — 매번 확인
 
 | 항목 | 값 | 왜 |
