@@ -15,6 +15,13 @@ projects/p1-foc-bringup/
 └── docs/   # 회로도, 배선 사진 등
 ```
 
+## 현재 실험
+
+| 폴더 | 상태 |
+|---|---|
+| [p0-setup](p0-setup/) | ✅ 완료 (2026-08-27) — Blink + 시리얼 hello |
+| [p1-foc-bringup](p1-foc-bringup/) | 진행 중 — 모터 첫 회전 → FOC |
+
 ## 여기 두지 않는 것
 
 HAL·CMSIS·startup·링커스크립트·툴체인 cmake·CubeMX `.ioc` 는 실험마다 같으므로
