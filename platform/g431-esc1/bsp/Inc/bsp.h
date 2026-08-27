@@ -36,6 +36,44 @@ void bsp_uart_puts(const char *s);
  */
 void bsp_printf(const char *fmt, ...);
 
+/* --- 3상 PWM (TIM1) ------------------------------------------------------
+ * U: CH1  PA8  / CH1N PC13      (UM2516 Table 4)
+ * V: CH2  PA9  / CH2N PA12
+ * W: CH3  PA10 / CH3N PB15
+ *
+ * Center-aligned, ARR=4249 -> 20kHz. 데드타임 DTG=149 -> 1us.
+ *
+ * ⚠️ TIM1_BKIN 이 MCU 에 연결돼 있지 않다 = 하드웨어 과전류 차단이 없다.
+ *    전원공급장치의 전류 리밋이 유일한 실질 보호장치다.
+ * ⚠️ 게이트 드라이버 EN 핀이 없다. 출력을 끊는 유일한 수단이 bsp_pwm_stop() 이다.
+ */
+#define BSP_PWM_ARR       4249u   /* .ioc 의 Period 와 반드시 일치 */
+
+/**
+ * 브링업 안전 상한. 듀티는 이 값을 넘지 못하게 클램프된다.
+ * 12V / 상간 21Ω 이므로 듀티 100% 여도 모터 전류는 0.57A 지만,
+ * 배선이나 설정 실수를 여기서 한 번 더 막는다.
+ * 올릴 때는 전원 전류 리밋을 먼저 확인하고 의도적으로 올릴 것.
+ */
+#define BSP_PWM_DUTY_MIN  0.20f
+#define BSP_PWM_DUTY_MAX  0.80f
+
+/** 듀티 0 으로 맞춘 뒤 6채널(상보 포함) 출력을 시작한다. */
+void bsp_pwm_start(void);
+
+/** 6채널 출력을 끊는다. MOE=0 -> Idle State(Reset) = 6게이트 전부 off. */
+void bsp_pwm_stop(void);
+
+/** 각 상 듀티 0.0~1.0. BSP_PWM_DUTY_MIN/MAX 로 클램프된다. */
+void bsp_pwm_set_duty(float du, float dv, float dw);
+
+/**
+ * 전기각 theta_e[rad] 방향으로 크기 m(0.0~1.0)의 전압 벡터를 인가한다.
+ * 사인 변조(3차 고조파 주입 없음) — 선간 최대 진폭은 m x Vbus x sqrt(3)/2.
+ * m=0.30, Vbus=12V 이면 선간 약 3.1V -> 21Ω 에서 약 0.15A.
+ */
+void bsp_pwm_set_vector(float theta_e, float m);
+
 /* --- 앞으로 추가될 자리 ---------------------------------------------------
  * CubeMX(platform/g431-esc1/g431-esc1.ioc)에서 주변장치를 켤 때마다
  * 여기에 래퍼를 추가한다. 실험 코드가 레지스터/핀을 직접 만지지 않게.
