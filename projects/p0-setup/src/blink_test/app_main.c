@@ -14,6 +14,6 @@ void app_main(void)
     while (1)
     {
         bsp_led_toggle();
-        HAL_Delay(500);
+        HAL_Delay(1000);
     }
 }
