@@ -87,4 +87,26 @@ B-G431B-ESC1 보드에는 아래가 실제로 달려 있지만, **어느 핀/페
 - 정본: [`platform/g431-esc1/g431-esc1.ioc`](../../../platform/g431-esc1/g431-esc1.ioc)
 - 보드 공용 계층 설명: [`platform/g431-esc1/README.md`](../../../platform/g431-esc1/README.md)
 - [2026-08-05 개발환경 세팅](../../../log/2026-08-05-dev-environment-setup.md)
-- ST 문서: UM2516 (B-G431B-ESC1 Discovery kit 사용자 매뉴얼), RM0440 (STM32G4 레퍼런스 매뉴얼)
+### ST 문서 링크
+
+핀 확인은 **회로도(MB1419)가 정본**이다. UM2516 은 커넥터·사용법 중심.
+
+| 문서 | 용도 | 링크 |
+|---|---|---|
+| **MB1419 회로도** | **MCU 핀 ↔ 게이트드라이버·션트 결선. 핀맵의 정본** | [schematic_pack/mb1419-g431cbu6-c01_schematic.pdf](https://www.st.com/resource/en/schematic_pack/mb1419-g431cbu6-c01_schematic.pdf) |
+| UM2516 | 보드 사용자 매뉴얼 — 커넥터, VCP, 점퍼 | [user_manual/um2516-...pdf](https://www.st.com/resource/en/user_manual/um2516-electronic-speed-controller-discovery-kit-for-drones-with-stm32g431cb-stmicroelectronics.pdf) |
+| 보드 제품 페이지 | 최신 리비전·CAD 자료 | [b-g431b-esc1.html](https://www.st.com/en/evaluation-tools/b-g431b-esc1.html) |
+| DS12589 | STM32G431CB 데이터시트 — 핀 대체기능 표 | [datasheet/stm32g431cb.pdf](https://www.st.com/resource/en/datasheet/stm32g431cb.pdf) |
+| RM0440 | STM32G4 레퍼런스 매뉴얼 — TIM1 상보출력·데드타임·ADC 인젝티드 | [reference_manual/rm0440-...pdf](https://www.st.com/resource/en/reference_manual/rm0440-stm32g4-series-advanced-armbased-32bit-mcus-stmicroelectronics.pdf) |
+| G431 에라타 | 실리콘 버그 | [errata_sheet/dm00502298-...pdf](https://www.st.com/resource/en/errata_sheet/dm00502298-stm32g431xx441xx-device-errata-stmicroelectronics.pdf) |
+
+### 파워단 부품 (UM2516 기준)
+
+| 부품 | 역할 | 링크 |
+|---|---|---|
+| **L6387** | 하프브리지 게이트 드라이버 ×3. **데드타임 값의 근거가 여기 있다** (전파지연·상승/하강 시간) | [datasheet/l6387e.pdf](https://www.st.com/resource/en/datasheet/l6387e.pdf) |
+| **STL180N6F7** | 파워 MOSFET ×6 | [datasheet/stl180n6f7.pdf](https://www.st.com/resource/en/datasheet/stl180n6f7.pdf) |
+
+> L6387E 는 상·하단 입력이 동시에 High 가 되지 않도록 하는 **인터록**이 내장돼 있다.
+> 논리 실수에 대한 안전망은 되지만, MOSFET 이 꺼지는 데 걸리는 시간 때문에
+> **데드타임은 여전히 필요하다.** 인터록은 입력단 보호이지 스위칭 과도구간 보호가 아니다.
