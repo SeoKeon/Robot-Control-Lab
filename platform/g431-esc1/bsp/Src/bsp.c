@@ -45,6 +45,54 @@ void bsp_led_on(void)     { HAL_GPIO_WritePin(BSP_LED_PORT, BSP_LED_PIN, GPIO_PI
 void bsp_led_off(void)    { HAL_GPIO_WritePin(BSP_LED_PORT, BSP_LED_PIN, GPIO_PIN_RESET); }
 void bsp_led_toggle(void) { HAL_GPIO_TogglePin(BSP_LED_PORT, BSP_LED_PIN); }
 
+/* ===================== AS5600 (I2C1) ===================== */
+
+extern I2C_HandleTypeDef hi2c1;   /* CubeMX 가 main.c 에 만든 핸들 */
+
+#define AS5600_HAL_ADDR   (BSP_AS5600_ADDR << 1)   /* HAL 은 8비트 주소를 받는다 */
+#define AS5600_REG_STATUS 0x0Bu
+#define AS5600_REG_RAWANG 0x0Cu                    /* 0x0C(H) 0x0D(L) 빅엔디언 */
+#define AS5600_I2C_TO     20u                      /* ms */
+
+void bsp_i2c_scan(void)
+{
+    int found = 0;
+
+    bsp_uart_puts("I2C1 scan:");
+    for (uint8_t a = 0x08; a < 0x78; a++) {
+        if (HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(a << 1), 1, 5) == HAL_OK) {
+            bsp_printf(" 0x%02X", a);
+            found++;
+        }
+    }
+    bsp_printf("  (%d개)\r\n", found);
+}
+
+int bsp_as5600_magnet_ok(uint8_t *detail)
+{
+    uint8_t st = 0;
+
+    if (HAL_I2C_Mem_Read(&hi2c1, AS5600_HAL_ADDR, AS5600_REG_STATUS,
+                         I2C_MEMADD_SIZE_8BIT, &st, 1, AS5600_I2C_TO) != HAL_OK) {
+        if (detail) { *detail = 0; }
+        return 0;
+    }
+    if (detail) { *detail = st; }
+    return (st & 0x20u) ? 1 : 0;   /* bit5 MD */
+}
+
+int bsp_as5600_read_raw(uint16_t *raw)
+{
+    uint8_t b[2];
+
+    if (HAL_I2C_Mem_Read(&hi2c1, AS5600_HAL_ADDR, AS5600_REG_RAWANG,
+                         I2C_MEMADD_SIZE_8BIT, b, 2, AS5600_I2C_TO) != HAL_OK) {
+        return -1;
+    }
+    *raw = (uint16_t)(((uint16_t)(b[0] & 0x0Fu) << 8) | b[1]);
+    return 0;
+}
+
 /* ===================== 3상 PWM (TIM1) ===================== */
 
 extern TIM_HandleTypeDef htim1;   /* CubeMX 가 main.c 에 만든 핸들 */

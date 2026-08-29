@@ -74,6 +74,29 @@ void bsp_pwm_set_duty(float du, float dv, float dw);
  */
 void bsp_pwm_set_vector(float theta_e, float m);
 
+/* --- AS5600 자기 엔코더 (I2C1: PB7=SDA, PB8=SCL, 100kHz) -------------------
+ * J8 커넥터 경유. 보드 홀입력 회로의 +3.3V 10K 풀업을 그대로 쓴다.
+ * 주소 0x36 고정. 12비트(0~4095) = 기계각 1회전.
+ */
+#define BSP_AS5600_ADDR   0x36u
+#define BSP_AS5600_CPR    4096u   /* counts per revolution */
+
+/** I2C 버스 스캔 — 응답한 7비트 주소를 시리얼로 출력. 배선 검증용 */
+void bsp_i2c_scan(void);
+
+/**
+ * 자석 상태 확인. 1=정상(MD, 자석 감지), 0=문제.
+ * detail 이 NULL 이 아니면 STATUS 레지스터 원값(0x0B)을 넣어준다:
+ *   bit5 MD=자석 감지, bit4 ML=자석 너무 약함/멀다, bit3 MH=너무 강함/가깝다
+ */
+int bsp_as5600_magnet_ok(uint8_t *detail);
+
+/**
+ * 기계각 원시값 읽기 (RAW ANGLE 0x0C/0x0D, 0~4095).
+ * 성공 시 0, 실패(I2C 에러) 시 -1.
+ */
+int bsp_as5600_read_raw(uint16_t *raw);
+
 /* --- 앞으로 추가될 자리 ---------------------------------------------------
  * CubeMX(platform/g431-esc1/g431-esc1.ioc)에서 주변장치를 켤 때마다
  * 여기에 래퍼를 추가한다. 실험 코드가 레지스터/핀을 직접 만지지 않게.
