@@ -81,6 +81,17 @@ int bsp_as5600_magnet_ok(uint8_t *detail)
     return (st & 0x20u) ? 1 : 0;   /* bit5 MD */
 }
 
+int bsp_as5600_read_agc(uint8_t *agc)
+{
+    /* AGC(0x1A): 자동 게인. 5V 모드 0~255, 3.3V 모드 0~128.
+       값이 클수록 자기장이 약하다 = 자석이 멀다. 중간값(약 64)이 이상적. */
+    if (HAL_I2C_Mem_Read(&hi2c1, AS5600_HAL_ADDR, 0x1Au,
+                         I2C_MEMADD_SIZE_8BIT, agc, 1, AS5600_I2C_TO) != HAL_OK) {
+        return -1;
+    }
+    return 0;
+}
+
 int bsp_as5600_read_raw(uint16_t *raw)
 {
     uint8_t b[2];

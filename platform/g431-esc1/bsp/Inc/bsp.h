@@ -97,6 +97,9 @@ int bsp_as5600_magnet_ok(uint8_t *detail);
  */
 int bsp_as5600_read_raw(uint16_t *raw);
 
+/** AGC(자동 게인) 읽기. 3.3V 모드에서 0~128, 클수록 자석이 멀다. 이상적 ~64 */
+int bsp_as5600_read_agc(uint8_t *agc);
+
 /* --- 앞으로 추가될 자리 ---------------------------------------------------
  * CubeMX(platform/g431-esc1/g431-esc1.ioc)에서 주변장치를 켤 때마다
  * 여기에 래퍼를 추가한다. 실험 코드가 레지스터/핀을 직접 만지지 않게.
