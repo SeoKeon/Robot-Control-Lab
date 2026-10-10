@@ -33,6 +33,9 @@ platform/g431-esc1/   보드 공용 계층 — 실험마다 동일한 것은 전
 ├── platform.cmake        프로젝트가 부르는 add_lab_firmware()
 └── template/             새 실험 시작용 복사본
 
+hardware/             기구 공용 계층 — 실험이 같이 쓰는 거치대·지그 (CadQuery 원본 + 출력 3MF)
+└── foc-test-stand/       모터 + AS5600 + ESC1 테스트 거치대
+
 projects/pN-이름/      실험 하나 = 폴더 하나
 ├── src/                  실험 코드 + 짧은 CMakeLists (platform 참조)
 ├── data/                 측정 데이터 (선별해서 커밋)

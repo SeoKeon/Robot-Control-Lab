@@ -41,6 +41,10 @@ platform/g431-esc1/CMakeLists.txt
 platform/g431-esc1/CMakePresets.json
 platform/g431-esc1/cmake/stm32cubemx/
 
+# 기구 CAD — 스크립트(.py)가 정본, out/ 의 STEP·STL 은 재생성 가능하고
+# STEP 은 실행마다 타임스탬프가 바뀌어 의미 없는 diff 를 만든다
+hardware/**/out/
+
 # OS
 .DS_Store
 Thumbs.db
