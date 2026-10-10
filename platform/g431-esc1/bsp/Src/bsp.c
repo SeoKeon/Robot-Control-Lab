@@ -92,6 +92,23 @@ int bsp_as5600_read_agc(uint8_t *agc)
     return 0;
 }
 
+int bsp_as5600_set_filter(uint8_t sf, uint8_t fth, uint16_t *conf_out)
+{
+    /* CONF: 0x07 = [WD | FTH(3) | SF(2)], 0x08 = [PWMF | OUTS | HYST | PM] */
+    uint8_t hi = 0;
+    if (HAL_I2C_Mem_Read(&hi2c1, AS5600_HAL_ADDR, 0x07u, I2C_MEMADD_SIZE_8BIT,
+                         &hi, 1, AS5600_I2C_TO) != HAL_OK) { return -1; }
+    hi = (uint8_t)((hi & ~0x1Fu) | ((fth & 0x07u) << 2) | (sf & 0x03u));
+    if (HAL_I2C_Mem_Write(&hi2c1, AS5600_HAL_ADDR, 0x07u, I2C_MEMADD_SIZE_8BIT,
+                          &hi, 1, AS5600_I2C_TO) != HAL_OK) { return -1; }
+    if (conf_out) {
+        uint8_t b[2] = {0, 0};
+        HAL_I2C_Mem_Read(&hi2c1, AS5600_HAL_ADDR, 0x07u, I2C_MEMADD_SIZE_8BIT, b, 2, AS5600_I2C_TO);
+        *conf_out = (uint16_t)(((uint16_t)b[0] << 8) | b[1]);
+    }
+    return 0;
+}
+
 int bsp_as5600_read_raw(uint16_t *raw)
 {
     uint8_t b[2];

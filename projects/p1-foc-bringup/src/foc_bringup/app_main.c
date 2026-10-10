@@ -290,6 +290,61 @@ static void do_brake_test(void)
     run_commutation(0.30f, +1, 20000u, "브레이크 테스트: 정방향 20s — 아무 때나 눌러보세요");
 }
 
+/* f: AS5600 필터 비교 — 지연(회전 중 id) vs 노이즈(정지 σ) */
+typedef struct { uint8_t sf, fth; const char *name; } enc_filter_t;
+static const enc_filter_t FILTERS[] = {
+    { 0u, 0u, "A: SF=16x (기본)" },
+    { 3u, 0u, "B: SF=2x" },
+    { 0u, 1u, "C: SF=16x + FTH=6LSB" },
+};
+#define N_FILTERS (sizeof(FILTERS) / sizeof(FILTERS[0]))
+
+static void angle_noise_at_rest(float *sigma_cnt)   /* PWM off, 로터 정지 상태에서 */
+{
+    uint16_t r0 = 0;
+    bsp_as5600_read_raw(&r0);
+    double s = 0, q = 0;
+    const int n = 300;
+    for (int i = 0; i < n; i++) {
+        uint16_t r = 0;
+        bsp_as5600_read_raw(&r);
+        int32_t d = (int32_t)r - (int32_t)r0;          /* 0/4095 경계 대비 */
+        if (d >  CPR / 2) { d -= CPR; }
+        if (d < -CPR / 2) { d += CPR; }
+        s += d; q += (double)d * d;
+    }
+    float m = (float)(s / n);
+    *sigma_cnt = sqrtf((float)(q / n) - m * m);
+}
+
+static void do_filter_compare(void)
+{
+    char b1[16], b2[16];
+    uint16_t conf;
+
+    bsp_uart_puts("\r\n[필터 비교 1/2] 정지 상태 각도 노이즈 (PWM off)\r\n");
+    bsp_pwm_stop();
+    HAL_Delay(300);
+    for (uint32_t k = 0; k < N_FILTERS; k++) {
+        float sg;
+        bsp_as5600_set_filter(FILTERS[k].sf, FILTERS[k].fth, &conf);
+        HAL_Delay(20);
+        angle_noise_at_rest(&sg);
+        bsp_printf("  %-22s CONF=0x%04X  σ = %s count (= %s mdeg 기계)\r\n",
+                   FILTERS[k].name, conf, f1(sg, b1), f1(sg * 360.0f / CPR * 1000.0f, b2));
+    }
+
+    bsp_uart_puts("\r\n[필터 비교 2/2] 회전 중 dq (m=0.30 정방향, 각 4s)\r\n");
+    bsp_pwm_start();
+    int ok = 0;
+    for (uint32_t k = 0; k < N_FILTERS && ok == 0; k++) {
+        bsp_as5600_set_filter(FILTERS[k].sf, FILTERS[k].fth, &conf);
+        ok = run_commutation(0.30f, +1, 4000u, FILTERS[k].name);
+    }
+    bsp_as5600_set_filter(0u, 0u, &conf);
+    bsp_printf("\r\n필터 기본값 복귀 (CONF=0x%04X)\r\n", conf);
+}
+
 static void wait_cmd(uint8_t *ch)
 {
     *ch = 0;
@@ -314,16 +369,17 @@ void app_main(void)
 
     /* 명령 대기 루프. 실행 사이에는 PWM 을 끈다(로터 자유). 오프셋은 RAM 에 유지 */
     while (1) {
-        bsp_uart_puts("\r\n명령: c=캘리브레이션  r=손 안 대는 주행  b=브레이크 테스트(20s)  (실행 중 q=정지)\r\n");
+        bsp_uart_puts("\r\n명령: c=캘리브레이션  r=손 안 대는 주행  b=브레이크 테스트(20s)  f=엔코더 필터 비교  (실행 중 q=정지)\r\n");
         uint8_t ch;
         wait_cmd(&ch);
-        if (ch != 'c' && ch != 'r' && ch != 'b') { continue; }
+        if (ch != 'c' && ch != 'r' && ch != 'b' && ch != 'f') { continue; }
 
         measure_cs_offset();   /* PWM off 인 지금 영점을 새로 잰다 (온도 드리프트 대비) */
         bsp_pwm_start();
         if (ch == 'c' || !g_calibrated) { do_calibration(); }
         if (ch == 'r') { do_handsoff_run(); }
         if (ch == 'b') { do_brake_test(); }
+        if (ch == 'f') { do_filter_compare(); }
         coast(800u);
         bsp_pwm_stop();
         bsp_uart_puts("PWM 정지 (6게이트 off)\r\n");
