@@ -12,6 +12,11 @@
  *   'x' 가 τ 를 0 / 0.4 / 0.8 / 1.2 ms 로 바꿔가며 무부하 id 를 잰다 — id 가 0 을
  *   지나는 τ 가 실제 지연이다.
  *
+ * 전류 루프 (FOC): 'i' / 'k'. id 지령 0, iq 지령으로 토크를 직접 명령한다.
+ *   V = 피드포워드(R·i_ref + ψ·ω) + 적분기. 전압 m ≤ 0.40, 포화 중 적분 정지.
+ *   'k' 에서 잡았을 때 iq 가 지령(100 mA)에 머물면 성공 — 전압 모드는 같은 상황에서
+ *   V/R 까지 올라갔다.
+ *
  * (이전 단계: 오프셋 캘리브레이션 + 정류 단독 = 커밋 2587dce)
  *
  * 1) 캘리브레이션: 엔코더 0도와 자석(d축) 0도의 차이를 잰다.
@@ -271,6 +276,125 @@ static int run_commutation(float m, int lead, uint32_t ms, const char *label)
     return 0;
 }
 
+/* ---------------- 전류 루프 (FOC) ----------------
+ * 플랜트: 이 짐벌모터는 L/R 이 루프 주기(약 0.54 ms)보다 짧아서 사실상 저항이다.
+ *   다음 루프에서 측정되는 전류 ≈ (V − E) / R  (한 루프 지연)
+ * 제어기 (d, q 각각):
+ *   V = 피드포워드 + 적분기
+ *   피드포워드 Vq = R·iq_ref + ψ·ω   (필요한 전압을 미리 계산 — 대부분을 맡는다)
+ *   적분기      += KI·오차            (나머지만 천천히. KI·(1/R) = 0.2 → 루프마다 오차 20% 감소)
+ * 전압은 m ≤ M_MAX 로 제한하고, 포화 중에는 적분을 멈춘다 (anti-windup).
+ */
+#define R_PHASE   10.5f       /* Ω, 실측 상저항 (상간 21Ω / 2) */
+#define PSI_V_S   0.00814f    /* 역기전력 상수 [V·s/rad 전기], τ 스윕 데이터에서 계산 */
+#define V_BUS     12.0f
+#define KI_V_A    (0.2f * R_PHASE)   /* 적분 게인 [V/A per loop] */
+#define M_MAX     0.40f       /* 전압 크기 상한 (상 진폭 = 0.5·m·Vbus = 2.4 V) */
+#define I_TRIP_A  0.30f       /* 100 ms 평균 |iq| 가 이걸 넘으면 정지 */
+
+typedef struct { float iq_ref_a; uint32_t ms; const char *label; } cl_step_t;
+
+static int run_current_loop(const cl_step_t *steps, int n_steps)
+{
+    float vd_i = 0.0f, vq_i = 0.0f;    /* 적분기 [V] — 단계가 바뀌어도 이어간다 */
+    uint32_t cyc_prev = DWT->CYCCNT;
+    int32_t  acc_prev = enc_acc;
+    float    w_e      = 0.0f;
+
+    for (int sidx = 0; sidx < n_steps; sidx++) {
+        const float iq_ref = steps[sidx].iq_ref_a;
+        const float id_ref = 0.0f;
+        char b0[16];
+        bsp_printf("\r\n[%s] iq 지령 %s mA, id 지령 0, %lus\r\n",
+                   steps[sidx].label, f1(iq_ref * 1000.0f, b0), (unsigned long)(steps[sidx].ms / 1000u));
+        bsp_uart_puts("      t       rpm     id[mA]   iq[mA]   iq 샘플 σ    m[%]   포화[%]   loop\r\n");
+
+        uint32_t t0 = HAL_GetTick(), tlog = t0, loops = 0, nsat = 0;
+        int32_t  acc_log = enc_acc;
+        double   s_id = 0, s_iq = 0, s_iq2 = 0, s_m = 0;
+
+        while (HAL_GetTick() - t0 < steps[sidx].ms) {
+            enc_update();
+
+            uint32_t cyc = DWT->CYCCNT;
+            float dt_s = (float)(cyc - cyc_prev) / (float)SystemCoreClock;
+            cyc_prev = cyc;
+            if (dt_s > 0.0f) {
+                float w_inst = (float)(enc_acc - acc_prev) * (TWO_PI / (float)CPR) / dt_s
+                               * (float)g_sign * (float)PP;
+                w_e += dt_s / (W_FILT_S + dt_s) * (w_inst - w_e);
+            }
+            acc_prev = enc_acc;
+
+            float the = (float)g_sign * (float)PP * mech_rad() + g_off + w_e * g_tau;
+
+            /* 측정 */
+            float id, iq;
+            read_dq(the, &id, &iq);
+
+            /* 제어 */
+            float ed = id_ref - id, eq = iq_ref - iq;
+            float vd = vd_i;
+            float vq = vq_i + R_PHASE * iq_ref + PSI_V_S * w_e;
+
+            float vmax = 0.5f * M_MAX * V_BUS;
+            float vmag = sqrtf(vd * vd + vq * vq);
+            int   sat  = (vmag > vmax);
+            if (sat) { vd *= vmax / vmag; vq *= vmax / vmag; vmag = vmax; nsat++; }
+            else     { vd_i += KI_V_A * ed; vq_i += KI_V_A * eq; }   /* anti-windup */
+
+            /* (Vd, Vq) -> 크기 m 과 각도. bsp 는 각도 방향으로 크기 m 의 벡터를 세운다 */
+            float m = vmag / (0.5f * V_BUS);
+            bsp_pwm_set_vector(the + atan2f(vq, vd), m);
+
+            s_id += id; s_iq += iq; s_iq2 += (double)iq * iq; s_m += m;
+            loops++;
+
+            uint32_t now = HAL_GetTick();
+            if (now - tlog >= 100u) {
+                float dt  = (float)(now - tlog) / 1000.0f;
+                float rpm = (float)(enc_acc - acc_log) * 360.0f / (float)CPR / dt / 6.0f;
+                float mid = (float)(s_id / loops), miq = (float)(s_iq / loops);
+                float siq = sqrtf((float)(s_iq2 / loops) - miq * miq);
+                char b1[16], b2[16], b3[16], b4[16], b5[16];
+                bsp_printf("  %5lu ms  %7s  %7s  %7s  %7s  %6s  %5lu   %4lu Hz\r\n",
+                           (unsigned long)(now - t0), f1(rpm, b1),
+                           f1(mid * 1000.0f, b2), f1(miq * 1000.0f, b3), f1(siq * 1000.0f, b4),
+                           f1((float)(s_m / loops) * 100.0f, b5),
+                           (unsigned long)(100u * nsat / loops), (unsigned long)((float)loops / dt));
+                acc_log = enc_acc; tlog = now; loops = 0; nsat = 0;
+                s_id = s_iq = s_iq2 = s_m = 0;
+
+                if (fabsf(rpm) > (float)RPM_LIMIT) { bsp_uart_puts("  !! 속도 한계 초과 — 정지\r\n"); return -1; }
+                if (fabsf(miq) > I_TRIP_A)          { bsp_uart_puts("  !! 전류 한계 초과 — 정지\r\n"); return -1; }
+                if (quit_requested())               { bsp_uart_puts("  !! 'q' 수신 — 정지\r\n");   return -1; }
+            }
+        }
+    }
+    return 0;
+}
+
+/* i: 손 안 대는 전류 루프 확인 */
+static void do_current_loop_handsoff(void)
+{
+    static const cl_step_t seq[] = {
+        { 0.000f, 2000u, "전류 1: iq=0 (토크 0, 그대로 있어야)" },
+        { 0.040f, 4000u, "전류 2: iq=+40mA (가속)" },
+        { -0.040f, 4000u, "전류 3: iq=-40mA (감속 후 역회전)" },
+        { 0.000f, 2000u, "전류 4: iq=0 (토크 0, 관성으로 감속)" },
+    };
+    run_current_loop(seq, (int)(sizeof(seq) / sizeof(seq[0])));
+}
+
+/* k: 전류 루프 브레이크 테스트 — 잡아도 iq 가 지령에 머무는지 */
+static void do_current_loop_brake(void)
+{
+    static const cl_step_t seq[] = {
+        { 0.100f, 20000u, "전류 브레이크: iq=+100mA 20s — 아무 때나 잡아보세요" },
+    };
+    run_current_loop(seq, 1);
+}
+
 /* 단계 사이: 3상 같은 듀티(전압 0) = 권선 단락 브레이크로 감속 */
 static void coast(uint32_t ms)
 {
@@ -433,10 +557,11 @@ void app_main(void)
 
     /* 명령 대기 루프. 실행 사이에는 PWM 을 끈다(로터 자유). 오프셋은 RAM 에 유지 */
     while (1) {
-        bsp_uart_puts("\r\n명령: c=캘리브레이션  r=손 안 대는 주행  b=브레이크 테스트(20s)  f=엔코더 필터 비교  x=각도 외삽 τ 스윕  (실행 중 q=정지)\r\n");
+        bsp_uart_puts("\r\n명령: c=캘리브레이션  r=손 안 대는 주행  b=브레이크 테스트(20s)  f=엔코더 필터 비교  x=각도 외삽 τ 스윕\r\n"
+                      "      i=전류 루프 (손 안 댐)  k=전류 루프 브레이크 테스트(20s)  (실행 중 q=정지)\r\n");
         uint8_t ch;
         wait_cmd(&ch);
-        if (ch != 'c' && ch != 'r' && ch != 'b' && ch != 'f' && ch != 'x') { continue; }
+        if (ch != 'c' && ch != 'r' && ch != 'b' && ch != 'f' && ch != 'x' && ch != 'i' && ch != 'k') { continue; }
 
         measure_cs_offset();   /* PWM off 인 지금 영점을 새로 잰다 (온도 드리프트 대비) */
         bsp_pwm_start();
@@ -445,6 +570,8 @@ void app_main(void)
         if (ch == 'b') { do_brake_test(); }
         if (ch == 'f') { do_filter_compare(); }
         if (ch == 'x') { do_tau_sweep(); }
+        if (ch == 'i') { do_current_loop_handsoff(); }
+        if (ch == 'k') { do_current_loop_brake(); }
         coast(800u);
         bsp_pwm_stop();
         bsp_uart_puts("PWM 정지 (6게이트 off)\r\n");
