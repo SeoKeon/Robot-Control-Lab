@@ -1,0 +1,143 @@
+  3...
+  2...
+  1...
+
+[부호 판정] 전기 360도 = 기계 51.4도 회전
+cmd      4.2  enc      3.3  err     0.9  AGC  24
+cmd      8.4  enc      8.0  err     0.4  AGC  24
+cmd     12.7  enc     11.9  err     0.8  AGC  24
+cmd     17.0  enc     15.6  err     1.4  AGC  24
+cmd     21.3  enc     19.8  err     1.5  AGC  24
+cmd     25.6  enc     25.5  err     0.1  AGC  24
+cmd     29.9  enc     28.9  err     1.0  AGC  24
+cmd     34.2  enc     34.3  err     0.1  AGC  24
+cmd     38.4  enc     37.7  err     0.7  AGC  24
+cmd     42.7  enc     41.1  err     1.6  AGC  24
+cmd     47.0  enc     45.6  err     1.4  AGC  24
+cmd     51.3  enc     50.2  err     1.1  AGC  24
+-> 엔코더 부호 +1, 측정 50.2도 (기대 51.4)
+
+[속도 1] 전기 400 dps = 기계 57 dps, 기계 1바퀴
+cmd     56.9  enc     56.6  err     0.3  AGC  24
+cmd     62.7  enc     62.3  err     0.4  AGC  24
+cmd     68.4  enc     66.7  err     1.7  AGC  24
+cmd     74.1  enc     72.6  err     1.5  AGC  24
+cmd     79.8  enc     78.5  err     1.3  AGC  24
+cmd     85.5  enc     85.7  err     0.2  AGC  24
+cmd     91.2  enc     90.0  err     1.2  AGC  24
+cmd     96.9  enc     95.8  err     1.1  AGC  24
+cmd    102.7  enc    101.6  err     1.1  AGC  24
+cmd    108.4  enc    106.9  err     1.5  AGC  24
+cmd    114.1  enc    114.0  err     0.1  AGC  24
+cmd    119.8  enc    118.3  err     1.5  AGC  24
+cmd    125.5  enc    124.5  err     1.0  AGC  24
+cmd    131.2  enc    129.9  err     1.3  AGC  24
+cmd    136.9  enc    136.0  err     0.9  AGC  24
+cmd    142.7  enc    141.3  err     1.4  AGC  24
+cmd    148.4  enc    147.0  err     1.4  AGC  24
+cmd    154.1  enc    153.0  err     1.1  AGC  24
+cmd    159.8  enc    158.1  err     1.7  AGC  24
+cmd    165.5  enc    164.7  err     0.8  AGC  24
+cmd    171.2  enc    168.9  err     2.3  AGC  24
+cmd    177.0  enc    175.8  err     1.2  AGC  24
+cmd    182.7  enc    181.4  err     1.3  AGC  24
+cmd    188.4  enc    187.3  err     1.1  AGC  24
+cmd    194.1  enc    192.4  err     1.7  AGC  24
+cmd    199.8  enc    197.8  err     2.0  AGC  24
+cmd    205.5  enc    204.7  err     0.8  AGC  24
+cmd    211.2  enc    209.5  err     1.7  AGC  24
+cmd    217.0  enc    216.2  err     0.8  AGC  24
+cmd    222.7  enc    220.4  err     2.3  AGC  24
+cmd    228.4  enc    226.2  err     2.2  AGC  24
+cmd    234.1  enc    233.1  err     1.0  AGC  24
+cmd    239.8  enc    238.7  err     1.1  AGC  24
+cmd    245.5  enc    244.1  err     1.4  AGC  24
+cmd    251.2  enc    249.5  err     1.7  AGC  24
+cmd    257.0  enc    255.6  err     1.4  AGC  24
+cmd    262.7  enc    261.1  err     1.6  AGC  24
+cmd    268.4  enc    267.9  err     0.5  AGC  24
+cmd    274.1  enc    272.4  err     1.7  AGC  24
+cmd    279.8  enc    277.9  err     1.9  AGC  24
+cmd    285.5  enc    284.4  err     1.1  AGC  24
+cmd    291.2  enc    290.3  err     0.9  AGC  24
+cmd    297.0  enc    296.0  err     1.0  AGC  24
+cmd    302.7  enc    301.2  err     1.5  AGC  24
+cmd    308.4  enc    307.1  err     1.3  AGC  24
+cmd    314.1  enc    312.6  err     1.5  AGC  24
+cmd    319.8  enc    318.9  err     0.9  AGC  24
+cmd    325.5  enc    324.3  err     1.2  AGC  24
+cmd    331.2  enc    329.6  err     1.6  AGC  24
+cmd    337.0  enc    336.0  err     1.0  AGC  24
+cmd    342.7  enc    341.9  err     0.8  AGC  24
+cmd    348.4  enc    346.9  err     1.5  AGC  24
+cmd    354.1  enc    353.3  err     0.8  AGC  24
+cmd    359.8  enc    359.0  err     0.8  AGC  24
+cmd    365.5  enc    365.0  err     0.5  AGC  24
+cmd    371.2  enc    370.9  err     0.3  AGC  24
+cmd    377.0  enc    375.6  err     1.4  AGC  24
+cmd    382.7  enc    381.7  err     1.0  AGC  24
+cmd    388.4  enc    387.8  err     0.6  AGC  24
+cmd    394.1  enc    394.1  err     0.0  AGC  24
+cmd    399.8  enc    398.5  err     1.3  AGC  24
+cmd    405.5  enc    404.3  err     1.2  AGC  24
+cmd    411.3  enc    410.1  err     1.2  AGC  24
+
+[속도 2] 전기 1200 dps = 기계 171 dps, 기계 1바퀴
+cmd    428.1  enc    426.3  err     1.8  AGC  24
+cmd    445.3  enc    445.1  err     0.2  AGC  24
+cmd    462.4  enc    460.8  err     1.6  AGC  24
+cmd    479.6  enc    477.6  err     2.0  AGC  24
+cmd    496.7  enc    495.6  err     1.1  AGC  24
+cmd    513.9  enc    512.3  err     1.6  AGC  24
+cmd    531.0  enc    528.3  err     2.7  AGC  24
+cmd    548.1  enc    546.9  err     1.2  AGC  24
+cmd    565.3  enc    563.9  err     1.4  AGC  24
+cmd    582.4  enc    579.7  err     2.7  AGC  24
+cmd    599.6  enc    598.3  err     1.3  AGC  24
+cmd    616.7  enc    615.1  err     1.6  AGC  24
+cmd    633.9  enc    631.8  err     2.1  AGC  24
+cmd    651.0  enc    649.3  err     1.7  AGC  24
+cmd    668.1  enc    666.9  err     1.2  AGC  24
+cmd    685.3  enc    683.6  err     1.7  AGC  24
+cmd    702.4  enc    701.1  err     1.3  AGC  24
+cmd    719.6  enc    718.5  err     1.1  AGC  24
+cmd    736.7  enc    735.0  err     1.7  AGC  24
+cmd    753.9  enc    753.3  err     0.6  AGC  24
+cmd    771.0  enc    769.3  err     1.7  AGC  24
+
+[역방향] 전기 800 dps, 기계 1바퀴
+cmd    760.2  enc    759.8  err     0.4  AGC  24
+cmd    748.8  enc    749.0  err     0.2  AGC  24
+cmd    737.4  enc    737.5  err     0.1  AGC  24
+cmd    726.0  enc    726.9  err     0.9  AGC  24
+cmd    714.5  enc    715.6  err    -1.1  AGC  24
+cmd    703.1  enc    704.6  err    -1.5  AGC  24
+cmd    691.7  enc    692.6  err     0.9  AGC  24
+cmd    680.2  enc    680.9  err     0.7  AGC  24
+cmd    668.8  enc    669.5  err     0.7  AGC  24
+cmd    657.4  enc    657.6  err     0.2  AGC  24
+cmd    646.0  enc    646.5  err     0.5  AGC  24
+cmd    634.5  enc    635.6  err    -1.1  AGC  24
+cmd    623.1  enc    625.4  err    -2.3  AGC  24
+cmd    611.7  enc    612.2  err     0.5  AGC  24
+cmd    600.2  enc    601.8  err    -1.6  AGC  24
+cmd    588.8  enc    589.3  err     0.5  AGC  24
+cmd    577.4  enc    577.7  err     0.3  AGC  24
+cmd    566.0  enc    566.8  err     0.8  AGC  24
+cmd    554.5  enc    554.5  err     0.0  AGC  24
+cmd    543.1  enc    543.7  err     0.6  AGC  24
+cmd    531.7  enc    532.0  err     0.3  AGC  24
+cmd    520.2  enc    520.4  err     0.2  AGC  24
+cmd    508.8  enc    508.4  err     0.4  AGC  24
+cmd    497.4  enc    497.9  err     0.5  AGC  24
+cmd    485.9  enc    486.0  err     0.1  AGC  24
+cmd    474.5  enc    475.1  err     0.6  AGC  24
+cmd    463.1  enc    463.4  err     0.3  AGC  24
+cmd    451.7  enc    451.2  err     0.5  AGC  24
+cmd    440.2  enc    440.3  err     0.1  AGC  24
+cmd    428.8  enc    428.6  err     0.2  AGC  24
+cmd    417.4  enc    417.9  err     0.5  AGC  24
+
+PWM 정지. 최종:
+  누적 명령 411.4도 / 누적 실측 412.5도 / 오차 -1.1도
+err 가 속도에 따라 커졌다 줄어드는 것 = 부하각 δ. FOC 가 없앨 대상.
