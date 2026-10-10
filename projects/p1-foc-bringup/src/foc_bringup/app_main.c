@@ -51,7 +51,8 @@ extern UART_HandleTypeDef huart2;
 /* 각도 외삽: θ_보정 = θ + ω·τ. 엔코더 각도가 τ 만큼 늦게 오는 것을 보정한다.
    2026-10-10 실측: AS5600 SF=2x 에서 약 0.85 ms (대부분 I2C 읽기) */
 #define W_FILT_S    0.005f    /* 속도 평활 시정수 5 ms */
-static float g_tau = 0.0f;    /* [s] */
+#define TAU_LAG_S   0.00085f  /* τ 스윕 실측: id 가 0 을 지나는 점 0.87 ms */
+static float g_tau = TAU_LAG_S;   /* [s] */
 
 /* ---------------- 엔코더: 절대각 + 언랩 누적 ---------------- */
 static uint16_t enc_raw;     /* 마지막 raw (절대각) */
@@ -362,15 +363,17 @@ static void do_filter_compare(void)
                    FILTERS[k].name, conf, f1(sg, b1), f1(sg * 360.0f / CPR * 1000.0f, b2));
     }
 
-    bsp_uart_puts("\r\n[필터 비교 2/2] 회전 중 dq (m=0.30 정방향, 각 4s)\r\n");
+    bsp_uart_puts("\r\n[필터 비교 2/2] 회전 중 dq (m=0.30 정방향, 각 4s, 외삽 보정 끔)\r\n");
     bsp_pwm_start();
+    g_tau = 0.0f;   /* 필터 자체의 지연을 보려는 실험이라 보정 없이 */
     int ok = 0;
     for (uint32_t k = 0; k < N_FILTERS && ok == 0; k++) {
         bsp_as5600_set_filter(FILTERS[k].sf, FILTERS[k].fth, &conf);
         ok = run_commutation(0.30f, +1, 4000u, FILTERS[k].name);
     }
     bsp_as5600_set_filter(3u, 0u, &conf);
-    bsp_printf("\r\n필터 SF=2x 로 복귀 (CONF=0x%04X)\r\n", conf);
+    g_tau = TAU_LAG_S;
+    bsp_printf("\r\n필터 SF=2x, 외삽 보정 복귀 (CONF=0x%04X)\r\n", conf);
 }
 
 /* x: 각도 외삽 τ 를 바꿔가며 무부하 id 를 잰다. id 가 0 을 지나는 τ = 실제 지연 */
@@ -391,7 +394,7 @@ static void do_tau_sweep(void)
         g_tau = 0.8f / 1000.0f;
         ok = run_commutation(0.30f, -1, 3000u, "역방향 tau=0.8 ms");
     }
-    g_tau = 0.0f;
+    g_tau = TAU_LAG_S;
 }
 
 static void wait_cmd(uint8_t *ch)
