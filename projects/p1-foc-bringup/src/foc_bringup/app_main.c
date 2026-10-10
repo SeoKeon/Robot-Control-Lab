@@ -310,7 +310,30 @@ typedef struct {
     float    bw_hz;      /* 속도 루프 대역폭, 0 이면 BW_SPD_HZ */
 } cl_step_t;
 
+/* 계단 응답 1 ms 기록: 단계마다 처음 CAP_MS 동안, 1 ms 안의 루프 샘플을 평균해 RAM 에 쌓고
+ * 실행이 끝난 뒤(PWM 정지 후) 출력한다. 속도는 제어기가 보는 값(5 ms 필터 후) 그대로. */
+#define CAP_STEPS 5
+#define CAP_MS    300u
+typedef struct { uint16_t ms; int16_t rpm10, iqr10, iq10; } cap_t;   /* 0.1 rpm, 0.1 mA 단위 */
+static cap_t    g_cap[CAP_STEPS][CAP_MS];
+static uint16_t g_cap_n[CAP_STEPS];
+static float    g_cap_ref[CAP_STEPS];
+static int      g_cap_on, g_cap_pending;
+
+static int run_loop_body(const cl_step_t *steps, int n_steps);
+
+/* 루프 중에는 송신을 인터럽트 큐로 — 블로킹 송신은 로그 한 줄마다 루프를 약 6 ms 멈춘다 */
 static int run_current_loop(const cl_step_t *steps, int n_steps)
+{
+    bsp_uart_set_async(1);
+    int r = run_loop_body(steps, n_steps);
+    bsp_pwm_set_vector(0.0f, 0.0f);
+    uint32_t dropped = bsp_uart_set_async(0);
+    if (dropped) { bsp_printf("  (송신 큐 넘침: 누적 %lu 바이트 버림)\r\n", (unsigned long)dropped); }
+    return r;
+}
+
+static int run_loop_body(const cl_step_t *steps, int n_steps)
 {
     float vd_i = 0.0f, vq_i = 0.0f;    /* 전류 적분기 [V] — 단계가 바뀌어도 이어간다 */
     float w_i  = 0.0f;                 /* 속도 적분기 [A] */
@@ -342,6 +365,12 @@ static int run_current_loop(const cl_step_t *steps, int n_steps)
         uint32_t t0 = HAL_GetTick(), tlog = t0, loops = 0, nsat = 0;
         int32_t  acc_log = enc_acc;
         double   s_id = 0, s_iq = 0, s_m = 0, s_iqr = 0;
+
+        const int cap = g_cap_on && sidx < CAP_STEPS;
+        uint32_t  c_ms = 0;
+        float     c_rpm = 0, c_iqr = 0, c_iq = 0;
+        int       c_k = 0;
+        if (cap) { g_cap_n[sidx] = 0; g_cap_ref[sidx] = st->ref; }
 
         while (HAL_GetTick() - t0 < st->ms) {
             enc_update();
@@ -399,6 +428,22 @@ static int run_current_loop(const cl_step_t *steps, int n_steps)
             s_id += id; s_iq += iq; s_m += m; s_iqr += iq_ref;
             loops++;
 
+            if (cap && g_cap_n[sidx] < CAP_MS) {
+                uint32_t el = HAL_GetTick() - t0;
+                if (el != c_ms && c_k > 0) {
+                    cap_t *c = &g_cap[sidx][g_cap_n[sidx]++];
+                    c->ms    = (uint16_t)c_ms;
+                    c->rpm10 = (int16_t)(c_rpm / (float)c_k * 10.0f);
+                    c->iqr10 = (int16_t)(c_iqr / (float)c_k * 10.0f);
+                    c->iq10  = (int16_t)(c_iq  / (float)c_k * 10.0f);
+                    c_rpm = c_iqr = c_iq = 0.0f; c_k = 0; c_ms = el;
+                }
+                c_rpm += w_e / (float)PP * (float)g_sign * (60.0f / TWO_PI);
+                c_iqr += iq_ref * 1000.0f;
+                c_iq  += iq * 1000.0f;
+                c_k++;
+            }
+
             uint32_t now = HAL_GetTick();
             if (now - tlog >= 100u) {
                 float dt  = (float)(now - tlog) / 1000.0f;
@@ -455,7 +500,28 @@ static void do_speed_steps(void)
         { -150.0f, 1, 3000u, "속도 4: -150 rpm (역방향)" },
         {    0.0f, 1, 2000u, "속도 5: 0 rpm" },
     };
+    g_cap_on = 1;
     run_current_loop(seq, (int)(sizeof(seq) / sizeof(seq[0])));
+    g_cap_on = 0;
+    g_cap_pending = 1;
+}
+
+/* 's' 의 1 ms 기록 출력 — PWM 을 끈 뒤에 부른다 (출력에 수 초 걸림) */
+static void dump_capture(void)
+{
+    for (int s = 0; s < CAP_STEPS; s++) {
+        char b0[16];
+        bsp_printf("\r\n[1ms 기록 %d] 지령 %s rpm, %u 샘플\r\n   ms     rpm   iq지령   iq[mA]\r\n",
+                   s + 1, f1(g_cap_ref[s], b0), (unsigned)g_cap_n[s]);
+        for (int i = 0; i < g_cap_n[s]; i++) {
+            const cap_t *c = &g_cap[s][i];
+            char b1[16], b2[16], b3[16];
+            bsp_printf("  %3u  %7s  %7s  %7s\r\n", (unsigned)c->ms,
+                       f1((float)c->rpm10 / 10.0f, b1), f1((float)c->iqr10 / 10.0f, b2),
+                       f1((float)c->iq10 / 10.0f, b3));
+        }
+    }
+    bsp_uart_puts("[1ms 기록 끝]\r\n");
 }
 
 /* v: 대역폭 비교 — 같은 100 rpm 에서 게인만 바꿔 한 바퀴 주기 속도 출렁임이 줄어드는지 */
@@ -663,5 +729,6 @@ void app_main(void)
         coast(800u);
         bsp_pwm_stop();
         bsp_uart_puts("PWM 정지 (6게이트 off)\r\n");
+        if (g_cap_pending) { g_cap_pending = 0; dump_capture(); }
     }
 }

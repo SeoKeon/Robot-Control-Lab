@@ -12,9 +12,54 @@ extern UART_HandleTypeDef huart2;
 #define BSP_UART          (&huart2)
 #define BSP_UART_TIMEOUT  100u   /* ms. 블로킹 송신이라 무한대기는 피한다 */
 
+#define TXQ_SIZE 2048u   /* 2의 거듭제곱 */
+static uint8_t           txq[TXQ_SIZE];
+static volatile uint16_t txq_head, txq_tail;   /* head = 넣는 쪽(메인), tail = 빼는 쪽(인터럽트) */
+static volatile int      txq_async;
+static uint32_t          txq_dropped;
+
+void USART2_IRQHandler(void)
+{
+    USART_TypeDef *u = BSP_UART->Instance;
+    if ((u->CR1 & USART_CR1_TXEIE_TXFNFIE) && (u->ISR & USART_ISR_TXE_TXFNF)) {
+        if (txq_tail != txq_head) {
+            u->TDR = txq[txq_tail];
+            txq_tail = (uint16_t)((txq_tail + 1u) & (TXQ_SIZE - 1u));
+        } else {
+            u->CR1 &= ~USART_CR1_TXEIE_TXFNFIE;
+        }
+    }
+}
+
+uint32_t bsp_uart_set_async(int on)
+{
+    if (on) {
+        HAL_NVIC_SetPriority(USART2_IRQn, 3, 0);
+        HAL_NVIC_EnableIRQ(USART2_IRQn);
+        txq_async = 1;
+    } else if (txq_async) {
+        uint32_t t0 = HAL_GetTick();
+        while (txq_tail != txq_head && HAL_GetTick() - t0 < 2000u) { }
+        txq_async = 0;
+    }
+    return txq_dropped;
+}
+
 void bsp_uart_write(const uint8_t *data, uint16_t len)
 {
-    HAL_UART_Transmit(BSP_UART, (uint8_t *)data, len, BSP_UART_TIMEOUT);
+    if (!txq_async) {
+        HAL_UART_Transmit(BSP_UART, (uint8_t *)data, len, BSP_UART_TIMEOUT);
+        return;
+    }
+    for (uint16_t i = 0; i < len; i++) {
+        uint16_t next = (uint16_t)((txq_head + 1u) & (TXQ_SIZE - 1u));
+        if (next == txq_tail) { txq_dropped += (uint32_t)(len - i); break; }
+        txq[txq_head] = data[i];
+        txq_head = next;
+    }
+    __disable_irq();
+    BSP_UART->Instance->CR1 |= USART_CR1_TXEIE_TXFNFIE;
+    __enable_irq();
 }
 
 void bsp_uart_puts(const char *s)
@@ -24,7 +69,7 @@ void bsp_uart_puts(const char *s)
 
 void bsp_printf(const char *fmt, ...)
 {
-    char    buf[128];
+    char    buf[256];
     va_list ap;
 
     va_start(ap, fmt);

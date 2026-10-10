@@ -29,7 +29,15 @@ void bsp_uart_write(const uint8_t *data, uint16_t len);
 void bsp_uart_puts(const char *s);
 
 /**
- * printf 형식 송신. 한 번에 최대 127자(넘으면 잘린다).
+ * 비동기 송신 모드. 켜면 write 는 2 KB 큐에 넣고 바로 돌아오고, 실제 송신은 USART2
+ * TXE 인터럽트가 한다 — 제어 루프 안에서 찍어도 루프가 멈추지 않는다.
+ * 블로킹 송신(115200 baud)은 70바이트에 약 6 ms 걸린다. 큐가 차면 넘친 바이트는 버린다.
+ * 끄면(0) 큐가 빌 때까지 기다린 뒤 블로킹 모드로 돌아간다. 반환: 지금까지 버린 바이트 수.
+ */
+uint32_t bsp_uart_set_async(int on);
+
+/**
+ * printf 형식 송신. 한 번에 최대 255바이트(넘으면 잘린다. 한글은 글자당 3바이트).
  * 주의: %f 는 기본으로 동작하지 않는다 — newlib-nano 는 float 포맷을 빼고
  *       링크한다. 필요하면 링커 옵션에 -u _printf_float 를 추가할 것.
  *       당장은 정수로 스케일해서(예: 밀리단위) 찍는 쪽이 싸고 빠르다.
