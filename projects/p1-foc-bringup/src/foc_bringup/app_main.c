@@ -30,6 +30,7 @@ static void enc_poll(void)
 void app_main(void)
 {
     bsp_uart_puts("\r\n=== encoder hand-turn test (PWM OFF) ===\r\n");
+    bsp_i2c_scan();   /* 0x36 이 없으면 아래 값은 전부 0 — 배선부터 볼 것 */
     bsp_uart_puts("축에 기준 표시를 하고, 정확히 2바퀴 돌린 뒤 2바퀴 되돌리세요.\r\n");
     bsp_uart_puts("2바퀴 = +720.0 / 되돌리면 0.0 근처가 나와야 한다.\r\n\r\n");
 
@@ -45,9 +46,12 @@ void app_main(void)
         for (int i = 0; i < 20; i++) { enc_poll(); HAL_Delay(10); }
 
         int32_t deg10 = (enc_acc * 3600) / CPR;
-        bsp_printf("%5lu  누적 %6ld.%ld deg   raw %4u\r\n",
+        uint8_t st = 0, agc = 0;
+        bsp_as5600_magnet_ok(&st);
+        bsp_as5600_read_agc(&agc);
+        bsp_printf("%5lu  누적 %6ld.%ld deg   raw %4u   MD=%d AGC=%3u\r\n",
                    (unsigned long)n++, (long)(deg10 / 10), (long)labs(deg10 % 10),
-                   enc_prev);
+                   enc_prev, (st >> 5) & 1, agc);
         bsp_led_toggle();
     }
 }
