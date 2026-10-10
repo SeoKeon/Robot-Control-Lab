@@ -121,7 +121,7 @@ static void i2c_bus_diag(void)
     if (!sda0 || !scl0) {
         bsp_uart_puts("선이 Low 로 눌려 있다 -> AS5600 VCC 가 안 들어옴(보호다이오드가 끌어내림) 또는 GND 단락\r\n");
     } else if (n_ok) {
-        bsp_uart_puts("소프트웨어로는 응답한다 -> 배선 OK. 하드웨어 I2C 가 걸려 있었던 것 (아래 재스캔 확인)\r\n");
+        bsp_uart_puts("AS5600 응답함 -> 배선 OK. 아래 하드웨어 재스캔도 0x36 이면 정상\r\n");
     } else if (n_sw) {
         bsp_uart_puts("SDA 와 SCL 이 뒤바뀌어 연결돼 있다 -> 두 선을 서로 바꿔 꽂을 것\r\n");
     } else {
