@@ -41,15 +41,15 @@
 |---|---|
 | [Clarke·Park 와 전류 루프](2026-10-10-clarke-park-and-current-loop.md) · 로그 [전류 센싱](../log/2026-10-10-current-sense-bringup.md), [dq 관측·각도 지연](../log/2026-10-10-dq-observation-and-encoder-lag.md), [전류 루프](../log/2026-10-10-current-loop-foc.md) · [PWM 노트 §6](2026-08-27-tim1-complementary-pwm-deadtime.md) | 왜 카운터 꼭대기에서 재야 하나? 세 상 합이 0 이면 무엇이 확인되나? 회전 중 id ≠ 0 을 보고 오프셋을 의심하지 않은 근거는? 정렬을 볼 때 왜 속도가 아니라 id 를 보나? 전류 루프에서 피드포워드와 적분기는 각각 무슨 일을 하나? 전원 표시가 거의 안 변한 이유는? |
 
-### 🔄 6. 속도 루프 — 지금
+### ✅ 6. 속도 루프 — p1 완료
 
-| 볼 것 | 공부할 개념 |
+| 볼 것 | 스스로 답해볼 질문 |
 |---|---|
-| [PID 캐스케이드](2026-07-22-pid-cascade-structure.md) · [Clarke·Park 노트 "실습 연결"](2026-10-10-clarke-park-and-current-loop.md) | **대역폭 분리** — 안쪽(전류)이 바깥(속도)보다 5~10배 빨라야 하는 이유 · **관성 J 와 토크 상수 Kt 로 PI 게인 정하기** · 속도 추정(엔코더 차분의 노이즈, 필터의 지연) · 출력 제한(전류 한계)과 anti-windup · 계단 응답 읽기(상승시간, 오버슈트, 정상상태 오차) |
+| [속도 루프 설계](2026-10-10-speed-loop-cascade-design.md) · [PID 캐스케이드](2026-07-22-pid-cascade-structure.md) · 로그 [속도 루프](../log/2026-10-10-speed-loop.md) | 속도 루프가 전류 루프를 "즉시 나오는 토크"로 봐도 되는 조건은? Kp = J·ωc/Kt 의 단위를 따져볼 수 있나? 대역폭을 올리니 속도 출렁임은 줄었는데 iq 출렁임은 그대로인 이유는? 극점이 임계감쇠인데 오버슈트가 생기는 이유는? 브레이크 테스트에서 anti-windup 이 없었다면 놓는 순간 무슨 일이? 루프 속도 1940 → 1810 Hz 는 무엇의 흔적이었나? |
 
-외부 자료: Brian Douglas "Understanding PID Control" 시리즈 (캐스케이드, anti-windup 편)
+외부 자료: Brian Douglas "Understanding PID Control" 시리즈 (캐스케이드, anti-windup, setpoint weighting 편)
 
-### ⏭ 7. 위치 루프 — 속도 루프 다음
+### 🔄 7. 위치 루프 — 다음
 
 | 공부할 개념 |
 |---|
@@ -65,6 +65,8 @@
 
 <!-- 최신이 위. 노트를 추가할 때마다 한 줄 -->
 
+- [2026-10-10 속도 루프 설계 — 관성·토크 상수로 PI 게인 정하기](2026-10-10-speed-loop-cascade-design.md)
+  — 대역폭 분리, Kp = J·ωc/Kt, 외란 억제와 대역폭, PI 영점이 만드는 13.5% 오버슈트, 조건부 적분 anti-windup
 - [2026-10-10 Clarke·Park 변환과 전류 루프](2026-10-10-clarke-park-and-current-loop.md)
   — 왜 회전 좌표계인가, Clarke 진폭 불변형, Park 와 각도 오차, 측정한 플랜트로 설계한 피드포워드+적분기, 포화·anti-windup·d축 우선, 상전류 ≠ 전원 전류
 - [2026-10-10 전압 모드 FOC 와 전기각 오프셋](2026-10-10-voltage-mode-foc-and-offset.md)
