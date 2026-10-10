@@ -283,37 +283,62 @@ static int run_commutation(float m, int lead, uint32_t ms, const char *label)
  *   V = 피드포워드 + 적분기
  *   피드포워드 Vq = R·iq_ref + ψ·ω   (필요한 전압을 미리 계산 — 대부분을 맡는다)
  *   적분기      += KI·오차            (나머지만 천천히. KI·(1/R) = 0.2 → 루프마다 오차 20% 감소)
- * 전압은 m ≤ M_MAX 로 제한하고, 포화 중에는 적분을 멈춘다 (anti-windup).
+ * 전압 제한은 d축 우선: |Vd| ≤ Vmax 를 먼저 지키고, 남는 전압 sqrt(Vmax² − Vd²) 안에서 Vq.
+ * 포화된 축은 오차가 포화를 더 키우는 방향일 때 적분을 멈춘다 (anti-windup).
+ *
+ * 속도 루프 (캐스케이드 바깥): 속도 PI → iq 지령 (±IQ_LIM 으로 제한) → 위 전류 루프.
+ *   플랜트 J·dω/dt = Kt·iq − 마찰.  J ≈ 5e-6 kg·m² (가속 데이터 역산), Kt = 1.5·PP·ψ.
+ *   대역폭 목표 ωc = 2π·5 Hz → Kp = J·ωc/Kt, Ki = Kp·ωc/4. 전류 루프(수 ms)보다 충분히 느리다.
  */
 #define R_PHASE   10.5f       /* Ω, 실측 상저항 (상간 21Ω / 2) */
 #define PSI_V_S   0.00814f    /* 역기전력 상수 [V·s/rad 전기], τ 스윕 데이터에서 계산 */
 #define V_BUS     12.0f
-#define KI_V_A    (0.2f * R_PHASE)   /* 적분 게인 [V/A per loop] */
+#define KI_V_A    (0.2f * R_PHASE)   /* 전류 적분 게인 [V/A per loop] */
 #define M_MAX     0.40f       /* 전압 크기 상한 (상 진폭 = 0.5·m·Vbus = 2.4 V) */
 #define I_TRIP_A  0.30f       /* 100 ms 평균 |iq| 가 이걸 넘으면 정지 */
 
-typedef struct { float iq_ref_a; uint32_t ms; const char *label; } cl_step_t;
+#define J_KGM2    5.0e-6f     /* 로터 관성 (추정) */
+#define KT_NM_A   (1.5f * (float)PP * PSI_V_S)   /* 토크 상수 ≈ 0.086 N·m/A */
+#define WC_SPD    (TWO_PI * 5.0f)                /* 속도 루프 목표 대역폭 [rad/s] */
+#define KP_W      (J_KGM2 * WC_SPD / KT_NM_A)    /* [A per rad/s 기계] ≈ 1.8e-3 */
+#define KI_W      (KP_W * WC_SPD / 4.0f)         /* [A per rad 기계] ≈ 0.014 */
+#define IQ_LIM    0.15f       /* 속도 루프가 낼 수 있는 최대 iq [A] */
+
+typedef struct {
+    float    ref;        /* is_speed 면 rpm, 아니면 iq [A] */
+    int      is_speed;
+    uint32_t ms;
+    const char *label;
+} cl_step_t;
 
 static int run_current_loop(const cl_step_t *steps, int n_steps)
 {
-    float vd_i = 0.0f, vq_i = 0.0f;    /* 적분기 [V] — 단계가 바뀌어도 이어간다 */
+    float vd_i = 0.0f, vq_i = 0.0f;    /* 전류 적분기 [V] — 단계가 바뀌어도 이어간다 */
+    float w_i  = 0.0f;                 /* 속도 적분기 [A] */
     uint32_t cyc_prev = DWT->CYCCNT;
     int32_t  acc_prev = enc_acc;
     float    w_e      = 0.0f;
 
     for (int sidx = 0; sidx < n_steps; sidx++) {
-        const float iq_ref = steps[sidx].iq_ref_a;
-        const float id_ref = 0.0f;
+        const cl_step_t *st = &steps[sidx];
         char b0[16];
-        bsp_printf("\r\n[%s] iq 지령 %s mA, id 지령 0, %lus\r\n",
-                   steps[sidx].label, f1(iq_ref * 1000.0f, b0), (unsigned long)(steps[sidx].ms / 1000u));
-        bsp_uart_puts("      t       rpm     id[mA]   iq[mA]   iq 샘플 σ    m[%]   포화[%]   loop\r\n");
+        if (st->is_speed) {
+            bsp_printf("\r\n[%s] 속도 지령 %s rpm (iq 한계 ±%d mA), %lus\r\n",
+                       st->label, f1(st->ref, b0), (int)(IQ_LIM * 1000.0f), (unsigned long)(st->ms / 1000u));
+        } else {
+            bsp_printf("\r\n[%s] iq 지령 %s mA, id 지령 0, %lus\r\n",
+                       st->label, f1(st->ref * 1000.0f, b0), (unsigned long)(st->ms / 1000u));
+        }
+        bsp_uart_puts("      t      지령      rpm   iq지령   iq[mA]   id[mA]    m[%]  포화[%]  loop\r\n");
+
+        /* 속도 지령: 엔코더 rpm 기준 -> 전기 방향 기준 기계 rad/s */
+        const float w_ref = st->ref * (TWO_PI / 60.0f) * (float)g_sign;
 
         uint32_t t0 = HAL_GetTick(), tlog = t0, loops = 0, nsat = 0;
         int32_t  acc_log = enc_acc;
-        double   s_id = 0, s_iq = 0, s_iq2 = 0, s_m = 0;
+        double   s_id = 0, s_iq = 0, s_m = 0, s_iqr = 0;
 
-        while (HAL_GetTick() - t0 < steps[sidx].ms) {
+        while (HAL_GetTick() - t0 < st->ms) {
             enc_update();
 
             uint32_t cyc = DWT->CYCCNT;
@@ -332,22 +357,41 @@ static int run_current_loop(const cl_step_t *steps, int n_steps)
             float id, iq;
             read_dq(the, &id, &iq);
 
-            /* 제어 */
-            float ed = id_ref - id, eq = iq_ref - iq;
+            /* 바깥 루프: 속도 PI -> iq 지령 */
+            float iq_ref;
+            if (st->is_speed) {
+                float w_m   = w_e / (float)PP;               /* 기계 rad/s (전기 방향 기준) */
+                float e_w   = w_ref - w_m;
+                float iq_un = KP_W * e_w + w_i;
+                iq_ref = (iq_un > IQ_LIM) ? IQ_LIM : ((iq_un < -IQ_LIM) ? -IQ_LIM : iq_un);
+                int limited = (iq_ref != iq_un);
+                if (!limited || (e_w * iq_ref < 0.0f)) { w_i += KI_W * e_w * dt_s; }
+            } else {
+                iq_ref = st->ref;
+            }
+
+            /* 안쪽 루프: 전류 (피드포워드 + 적분) */
+            float ed = 0.0f - id, eq = iq_ref - iq;
             float vd = vd_i;
             float vq = vq_i + R_PHASE * iq_ref + PSI_V_S * w_e;
 
+            /* d축 우선 전압 제한 */
             float vmax = 0.5f * M_MAX * V_BUS;
-            float vmag = sqrtf(vd * vd + vq * vq);
-            int   sat  = (vmag > vmax);
-            if (sat) { vd *= vmax / vmag; vq *= vmax / vmag; vmag = vmax; nsat++; }
-            else     { vd_i += KI_V_A * ed; vq_i += KI_V_A * eq; }   /* anti-windup */
+            int sat_d = 0, sat_q = 0;
+            if (vd >  vmax) { vd =  vmax; sat_d = 1; }
+            if (vd < -vmax) { vd = -vmax; sat_d = 1; }
+            float vqmax = sqrtf(vmax * vmax - vd * vd);
+            if (vq >  vqmax) { vq =  vqmax; sat_q = 1; }
+            if (vq < -vqmax) { vq = -vqmax; sat_q = 1; }
+            if (!sat_d || ed * vd < 0.0f) { vd_i += KI_V_A * ed; }
+            if (!sat_q || eq * vq < 0.0f) { vq_i += KI_V_A * eq; }
+            if (sat_d || sat_q) { nsat++; }
 
-            /* (Vd, Vq) -> 크기 m 과 각도. bsp 는 각도 방향으로 크기 m 의 벡터를 세운다 */
+            float vmag = sqrtf(vd * vd + vq * vq);
             float m = vmag / (0.5f * V_BUS);
             bsp_pwm_set_vector(the + atan2f(vq, vd), m);
 
-            s_id += id; s_iq += iq; s_iq2 += (double)iq * iq; s_m += m;
+            s_id += id; s_iq += iq; s_m += m; s_iqr += iq_ref;
             loops++;
 
             uint32_t now = HAL_GetTick();
@@ -355,15 +399,16 @@ static int run_current_loop(const cl_step_t *steps, int n_steps)
                 float dt  = (float)(now - tlog) / 1000.0f;
                 float rpm = (float)(enc_acc - acc_log) * 360.0f / (float)CPR / dt / 6.0f;
                 float mid = (float)(s_id / loops), miq = (float)(s_iq / loops);
-                float siq = sqrtf((float)(s_iq2 / loops) - miq * miq);
-                char b1[16], b2[16], b3[16], b4[16], b5[16];
-                bsp_printf("  %5lu ms  %7s  %7s  %7s  %7s  %6s  %5lu   %4lu Hz\r\n",
-                           (unsigned long)(now - t0), f1(rpm, b1),
-                           f1(mid * 1000.0f, b2), f1(miq * 1000.0f, b3), f1(siq * 1000.0f, b4),
+                float ref_show = st->is_speed ? st->ref : st->ref * 1000.0f;
+                char b1[16], b2[16], b3[16], b4[16], b5[16], b6[16];
+                bsp_printf("  %5lu ms  %7s  %7s  %7s  %7s  %7s  %6s  %5lu  %4lu Hz\r\n",
+                           (unsigned long)(now - t0), f1(ref_show, b6), f1(rpm, b1),
+                           f1((float)(s_iqr / loops) * 1000.0f, b2),
+                           f1(miq * 1000.0f, b3), f1(mid * 1000.0f, b4),
                            f1((float)(s_m / loops) * 100.0f, b5),
                            (unsigned long)(100u * nsat / loops), (unsigned long)((float)loops / dt));
                 acc_log = enc_acc; tlog = now; loops = 0; nsat = 0;
-                s_id = s_iq = s_iq2 = s_m = 0;
+                s_id = s_iq = s_m = s_iqr = 0;
 
                 if (fabsf(rpm) > (float)RPM_LIMIT) { bsp_uart_puts("  !! 속도 한계 초과 — 정지\r\n"); return -1; }
                 if (fabsf(miq) > I_TRIP_A)          { bsp_uart_puts("  !! 전류 한계 초과 — 정지\r\n"); return -1; }
@@ -378,10 +423,10 @@ static int run_current_loop(const cl_step_t *steps, int n_steps)
 static void do_current_loop_handsoff(void)
 {
     static const cl_step_t seq[] = {
-        { 0.000f, 2000u, "전류 1: iq=0 (토크 0, 그대로 있어야)" },
-        { 0.040f, 4000u, "전류 2: iq=+40mA (가속)" },
-        { -0.040f, 4000u, "전류 3: iq=-40mA (감속 후 역회전)" },
-        { 0.000f, 2000u, "전류 4: iq=0 (토크 0, 관성으로 감속)" },
+        {  0.000f, 0, 2000u, "전류 1: iq=0 (토크 0, 그대로 있어야)" },
+        {  0.040f, 0, 4000u, "전류 2: iq=+40mA (가속)" },
+        { -0.040f, 0, 4000u, "전류 3: iq=-40mA (감속 후 역회전)" },
+        {  0.000f, 0, 2000u, "전류 4: iq=0 (토크 0, 관성으로 감속)" },
     };
     run_current_loop(seq, (int)(sizeof(seq) / sizeof(seq[0])));
 }
@@ -390,7 +435,29 @@ static void do_current_loop_handsoff(void)
 static void do_current_loop_brake(void)
 {
     static const cl_step_t seq[] = {
-        { 0.100f, 20000u, "전류 브레이크: iq=+100mA 20s — 아무 때나 잡아보세요" },
+        { 0.100f, 0, 20000u, "전류 브레이크: iq=+100mA 20s — 아무 때나 잡아보세요" },
+    };
+    run_current_loop(seq, 1);
+}
+
+/* s: 속도 루프 계단 응답 (손 안 댐) */
+static void do_speed_steps(void)
+{
+    static const cl_step_t seq[] = {
+        {    0.0f, 1, 2000u, "속도 1: 0 rpm 유지" },
+        {  100.0f, 1, 3000u, "속도 2: 100 rpm" },
+        {  200.0f, 1, 3000u, "속도 3: 200 rpm" },
+        { -150.0f, 1, 3000u, "속도 4: -150 rpm (역방향)" },
+        {    0.0f, 1, 2000u, "속도 5: 0 rpm" },
+    };
+    run_current_loop(seq, (int)(sizeof(seq) / sizeof(seq[0])));
+}
+
+/* w: 속도 루프 브레이크 테스트 — 눌러도 속도를 지키는지 */
+static void do_speed_brake(void)
+{
+    static const cl_step_t seq[] = {
+        { 150.0f, 1, 20000u, "속도 브레이크: 150 rpm 20s — 아무 때나 눌러보세요" },
     };
     run_current_loop(seq, 1);
 }
@@ -558,10 +625,11 @@ void app_main(void)
     /* 명령 대기 루프. 실행 사이에는 PWM 을 끈다(로터 자유). 오프셋은 RAM 에 유지 */
     while (1) {
         bsp_uart_puts("\r\n명령: c=캘리브레이션  r=손 안 대는 주행  b=브레이크 테스트(20s)  f=엔코더 필터 비교  x=각도 외삽 τ 스윕\r\n"
-                      "      i=전류 루프 (손 안 댐)  k=전류 루프 브레이크 테스트(20s)  (실행 중 q=정지)\r\n");
+                      "      i=전류 루프 (손 안 댐)  k=전류 루프 브레이크 테스트(20s)\r\n"
+                      "      s=속도 루프 계단 응답 (손 안 댐)  w=속도 루프 브레이크 테스트(20s)  (실행 중 q=정지)\r\n");
         uint8_t ch;
         wait_cmd(&ch);
-        if (ch != 'c' && ch != 'r' && ch != 'b' && ch != 'f' && ch != 'x' && ch != 'i' && ch != 'k') { continue; }
+        if (ch != 'c' && ch != 'r' && ch != 'b' && ch != 'f' && ch != 'x' && ch != 'i' && ch != 'k' && ch != 's' && ch != 'w') { continue; }
 
         measure_cs_offset();   /* PWM off 인 지금 영점을 새로 잰다 (온도 드리프트 대비) */
         bsp_pwm_start();
@@ -572,6 +640,8 @@ void app_main(void)
         if (ch == 'x') { do_tau_sweep(); }
         if (ch == 'i') { do_current_loop_handsoff(); }
         if (ch == 'k') { do_current_loop_brake(); }
+        if (ch == 's') { do_speed_steps(); }
+        if (ch == 'w') { do_speed_brake(); }
         coast(800u);
         bsp_pwm_stop();
         bsp_uart_puts("PWM 정지 (6게이트 off)\r\n");
