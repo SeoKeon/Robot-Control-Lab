@@ -302,22 +302,75 @@ static int run_commutation(float m, int lead, uint32_t ms, const char *label)
 #define BW_SPD_HZ 15.0f       /* 속도 루프 기본 목표 대역폭 → Kp ≈ 5.5e-3 A/(rad/s). 5 Hz 는 한 바퀴 부하를 못 누른다 */
 #define IQ_LIM    0.15f       /* 속도 루프가 낼 수 있는 최대 iq [A] */
 
+#define MODE_CURRENT 0
+#define MODE_SPEED   1
+#define MODE_POS     2
+
 typedef struct {
-    float    ref;        /* is_speed 면 rpm, 아니면 iq [A] */
-    int      is_speed;
+    float    ref;        /* 전류: iq [A] · 속도: rpm · 위치: 목표각 [deg, 실행 시작 위치 기준] */
+    int      mode;       /* MODE_CURRENT / MODE_SPEED / MODE_POS */
     uint32_t ms;
     const char *label;
     float    bw_hz;      /* 속도 루프 대역폭, 0 이면 BW_SPD_HZ */
+    int      raw_step;   /* 위치: 1 이면 궤적 없이 목표를 바로 준다 (계단) */
 } cl_step_t;
 
-/* 계단 응답 1 ms 기록: 단계마다 처음 CAP_MS 동안, 1 ms 안의 루프 샘플을 평균해 RAM 에 쌓고
- * 실행이 끝난 뒤(PWM 정지 후) 출력한다. 속도는 제어기가 보는 값(5 ms 필터 후) 그대로. */
-#define CAP_STEPS 5
-#define CAP_MS    300u
-typedef struct { uint16_t ms; int16_t rpm10, iqr10, iq10; } cap_t;   /* 0.1 rpm, 0.1 mA 단위 */
-static cap_t    g_cap[CAP_STEPS][CAP_MS];
+/* ---------------- 위치 루프 (캐스케이드 맨 바깥) ----------------
+ * 위치 P → 속도 지령 → 속도 PI → iq 지령 → 전류 루프.
+ *   ω_ref = v_ff + KP_POS·(θ_궤적 − θ)       (속도 피드포워드 + 위치 P, ±POS_WLIM 으로 제한)
+ *   iq_ff = J·a_ff / Kt                       (가속 피드포워드 — 궤적이 원하는 가속에 필요한 토크)
+ * 위치 루프 대역폭(4 Hz)은 속도 루프(15 Hz)의 약 1/4. 속도 PI 의 적분기 덕분에 일정한 부하가
+ * 걸려도 정지 위치 오차는 0 으로 간다. 목표는 사다리꼴 궤적(최고 속도·가속도 제한)으로 준다.
+ */
+#define KP_POS       (TWO_PI * 4.0f)              /* [1/s] 오차 1도 → 속도 지령 약 4 rpm */
+#define POS_VMAX     (120.0f * TWO_PI / 60.0f)    /* 궤적 최고 속도 120 rpm [rad/s] */
+#define POS_AMAX     300.0f                       /* 궤적 가속도 [rad/s²] → 가속 FF ≈ 17.5 mA */
+#define POS_WLIM     (200.0f * TWO_PI / 60.0f)    /* 위치 루프가 내는 속도 지령 한계 200 rpm */
+#define POS_ERR_TRIP (90.0f * DEG2RAD)            /* 오차가 이보다 크면 정지 (안전) */
+
+/* 사다리꼴 궤적: 정지 → 등가속 → 등속 → 등감속 → 정지. 거리가 짧으면 삼각형(등속 없음) */
+typedef struct { float p0, d, sgn, ta, tc, vp, a; } traj_t;
+
+static void traj_plan(traj_t *tj, float p0, float p1, float vmax, float amax)
+{
+    float D = p1 - p0;
+    tj->p0 = p0; tj->sgn = (D >= 0.0f) ? 1.0f : -1.0f; tj->d = fabsf(D); tj->a = amax;
+    if (tj->d * amax < vmax * vmax) { tj->vp = sqrtf(tj->d * amax); tj->tc = 0.0f; }
+    else                            { tj->vp = vmax; tj->tc = (tj->d - vmax * vmax / amax) / vmax; }
+    tj->ta = tj->vp / amax;
+}
+
+static void traj_eval(const traj_t *tj, float t, float *p, float *v, float *a)
+{
+    const float ta = tj->ta, tc = tj->tc, A = tj->a, vp = tj->vp;
+    float s, ds, dds;
+    if (t <= 0.0f)                 { s = 0.0f; ds = 0.0f; dds = 0.0f; }
+    else if (t < ta)               { s = 0.5f * A * t * t; ds = A * t; dds = A; }
+    else if (t < ta + tc)          { s = 0.5f * A * ta * ta + vp * (t - ta); ds = vp; dds = 0.0f; }
+    else if (t < 2.0f * ta + tc)   { float r = 2.0f * ta + tc - t; s = tj->d - 0.5f * A * r * r; ds = A * r; dds = -A; }
+    else                           { s = tj->d; ds = 0.0f; dds = 0.0f; }
+    *p = tj->p0 + tj->sgn * s; *v = tj->sgn * ds; *a = tj->sgn * dds;
+}
+
+static const char *f2(float x, char *b)
+{
+    long t = lroundf(x * 100.0f);
+    snprintf(b, 16, "%s%ld.%02ld", (t < 0) ? "-" : "", labs(t) / 100, labs(t) % 100);
+    return b;
+}
+
+/* 고해상도 기록: 단계마다 처음 CAP_N 칸, 한 칸 = g_cap_dt ms 안의 루프 샘플 평균.
+ * 실행이 끝난 뒤(PWM 정지 후) 출력한다. 속도는 제어기가 보는 값(5 ms 필터 후) 그대로.
+ *   속도 모드: a = rpm, b = iq 지령, c = iq        (0.1 단위)
+ *   위치 모드: a = 오차 [0.01도], b = rpm, c = iq 지령, d = 위치 [0.1도] */
+#define CAP_STEPS 6
+#define CAP_N     300u
+typedef struct { uint16_t ms; int16_t a, b, c, d; } cap_t;
+static cap_t    g_cap[CAP_STEPS][CAP_N];
 static uint16_t g_cap_n[CAP_STEPS];
 static float    g_cap_ref[CAP_STEPS];
+static int      g_cap_mode[CAP_STEPS];
+static uint32_t g_cap_dt = 1u;
 static int      g_cap_on, g_cap_pending;
 
 static int run_loop_body(const cl_step_t *steps, int n_steps);
@@ -333,6 +386,11 @@ static int run_current_loop(const cl_step_t *steps, int n_steps)
     return r;
 }
 
+static int16_t sat16(float x)
+{
+    return (int16_t)((x > 32767.0f) ? 32767.0f : ((x < -32768.0f) ? -32768.0f : x));
+}
+
 static int run_loop_body(const cl_step_t *steps, int n_steps)
 {
     float vd_i = 0.0f, vq_i = 0.0f;    /* 전류 적분기 [V] — 단계가 바뀌어도 이어간다 */
@@ -341,36 +399,53 @@ static int run_loop_body(const cl_step_t *steps, int n_steps)
     int32_t  acc_prev = enc_acc;
     float    w_e      = 0.0f;
 
+    const int32_t acc0  = enc_acc;     /* 위치 0 = 실행 시작 위치 (엔코더 방향, 멀티턴) */
+    float         p_cmd = 0.0f;        /* 궤적이 지금 가리키는 위치 [rad] — 단계가 바뀌어도 이어간다 */
+
     for (int sidx = 0; sidx < n_steps; sidx++) {
         const cl_step_t *st = &steps[sidx];
         char b0[16];
         const float wc   = TWO_PI * ((st->bw_hz > 0.0f) ? st->bw_hz : BW_SPD_HZ);
         const float kp_w = J_KGM2 * wc / KT_NM_A;   /* [A per rad/s 기계] */
         const float ki_w = kp_w * wc / 4.0f;        /* [A per rad 기계] */
-        if (st->is_speed) {
+        const float p_tgt = st->ref * DEG2RAD;
+        traj_t tj;
+        traj_plan(&tj, p_cmd, (st->raw_step ? p_cmd : p_tgt), POS_VMAX, POS_AMAX);
+
+        if (st->mode == MODE_POS) {
             char bk[16];
-            bsp_printf("\r\n[%s] 속도 지령 %s rpm, 대역폭 %s Hz (Kp %d.%02d mA/(rad/s)), iq 한계 ±%d mA, %lus\r\n",
-                       st->label, f1(st->ref, b0), f1(wc / TWO_PI, bk),
-                       (int)(kp_w * 1000.0f), (int)(kp_w * 100000.0f) % 100,
-                       (int)(IQ_LIM * 1000.0f), (unsigned long)(st->ms / 1000u));
+            bsp_printf("\r\n[%s] 목표 %s deg (%s), 위치 Kp %d /s, 속도 루프 %s Hz, %lus\r\n",
+                       st->label, f1(st->ref, b0),
+                       st->raw_step ? "궤적 없이 계단" : "사다리꼴 궤적 120 rpm, 300 rad/s²",
+                       (int)KP_POS, f1(wc / TWO_PI, bk), (unsigned long)(st->ms / 1000u));
+            bsp_uart_puts("      t    궤적[deg]  위치[deg]  오차[deg] |오차|최대     rpm   iq지령   iq[mA]  loop\r\n");
         } else {
-            bsp_printf("\r\n[%s] iq 지령 %s mA, id 지령 0, %lus\r\n",
-                       st->label, f1(st->ref * 1000.0f, b0), (unsigned long)(st->ms / 1000u));
+            if (st->mode == MODE_SPEED) {
+                char bk[16];
+                bsp_printf("\r\n[%s] 속도 지령 %s rpm, 대역폭 %s Hz (Kp %d.%02d mA/(rad/s)), iq 한계 ±%d mA, %lus\r\n",
+                           st->label, f1(st->ref, b0), f1(wc / TWO_PI, bk),
+                           (int)(kp_w * 1000.0f), (int)(kp_w * 100000.0f) % 100,
+                           (int)(IQ_LIM * 1000.0f), (unsigned long)(st->ms / 1000u));
+            } else {
+                bsp_printf("\r\n[%s] iq 지령 %s mA, id 지령 0, %lus\r\n",
+                           st->label, f1(st->ref * 1000.0f, b0), (unsigned long)(st->ms / 1000u));
+            }
+            bsp_uart_puts("      t      지령      rpm   iq지령   iq[mA]   id[mA]    m[%]  포화[%]  loop\r\n");
         }
-        bsp_uart_puts("      t      지령      rpm   iq지령   iq[mA]   id[mA]    m[%]  포화[%]  loop\r\n");
 
         /* 속도 지령: 엔코더 rpm 기준 -> 전기 방향 기준 기계 rad/s */
-        const float w_ref = st->ref * (TWO_PI / 60.0f) * (float)g_sign;
+        const float w_ref_spd = st->ref * (TWO_PI / 60.0f) * (float)g_sign;
 
         uint32_t t0 = HAL_GetTick(), tlog = t0, loops = 0, nsat = 0;
         int32_t  acc_log = enc_acc;
         double   s_id = 0, s_iq = 0, s_m = 0, s_iqr = 0;
+        float    t_step = 0.0f, e_p = 0.0f, e_max = 0.0f;
 
         const int cap = g_cap_on && sidx < CAP_STEPS;
-        uint32_t  c_ms = 0;
-        float     c_rpm = 0, c_iqr = 0, c_iq = 0;
+        uint32_t  c_slot = 0;
+        float     c_a = 0, c_b = 0, c_c = 0, c_d = 0;
         int       c_k = 0;
-        if (cap) { g_cap_n[sidx] = 0; g_cap_ref[sidx] = st->ref; }
+        if (cap) { g_cap_n[sidx] = 0; g_cap_ref[sidx] = st->ref; g_cap_mode[sidx] = st->mode; }
 
         while (HAL_GetTick() - t0 < st->ms) {
             enc_update();
@@ -384,6 +459,7 @@ static int run_loop_body(const cl_step_t *steps, int n_steps)
                 w_e += dt_s / (W_FILT_S + dt_s) * (w_inst - w_e);
             }
             acc_prev = enc_acc;
+            t_step += dt_s;
 
             float the = (float)g_sign * (float)PP * mech_rad() + g_off + w_e * g_tau;
 
@@ -391,12 +467,28 @@ static int run_loop_body(const cl_step_t *steps, int n_steps)
             float id, iq;
             read_dq(the, &id, &iq);
 
-            /* 바깥 루프: 속도 PI -> iq 지령 */
+            /* 맨 바깥: 위치 P (+ 궤적 피드포워드) -> 속도 지령 */
+            float w_ref = w_ref_spd, iq_ff = 0.0f;
+            float pos = (float)(enc_acc - acc0) * (TWO_PI / (float)CPR);
+            if (st->mode == MODE_POS) {
+                float v_ff = 0.0f, a_ff = 0.0f;
+                if (st->raw_step) { p_cmd = p_tgt; }
+                else              { traj_eval(&tj, t_step, &p_cmd, &v_ff, &a_ff); }
+                e_p = p_cmd - pos;
+                if (fabsf(e_p) > e_max) { e_max = fabsf(e_p); }
+                if (fabsf(e_p) > POS_ERR_TRIP) { bsp_uart_puts("  !! 위치 오차 90도 초과 — 정지\r\n"); return -1; }
+                float w_enc = v_ff + KP_POS * e_p;
+                w_enc = (w_enc > POS_WLIM) ? POS_WLIM : ((w_enc < -POS_WLIM) ? -POS_WLIM : w_enc);
+                w_ref = w_enc * (float)g_sign;
+                iq_ff = J_KGM2 * a_ff / KT_NM_A * (float)g_sign;
+            }
+
+            /* 가운데: 속도 PI (+ 가속 피드포워드) -> iq 지령 */
             float iq_ref;
-            if (st->is_speed) {
+            if (st->mode != MODE_CURRENT) {
                 float w_m   = w_e / (float)PP;               /* 기계 rad/s (전기 방향 기준) */
                 float e_w   = w_ref - w_m;
-                float iq_un = kp_w * e_w + w_i;
+                float iq_un = kp_w * e_w + w_i + iq_ff;
                 iq_ref = (iq_un > IQ_LIM) ? IQ_LIM : ((iq_un < -IQ_LIM) ? -IQ_LIM : iq_un);
                 int limited = (iq_ref != iq_un);
                 if (!limited || (e_w * iq_ref < 0.0f)) { w_i += ki_w * e_w * dt_s; }
@@ -404,7 +496,7 @@ static int run_loop_body(const cl_step_t *steps, int n_steps)
                 iq_ref = st->ref;
             }
 
-            /* 안쪽 루프: 전류 (피드포워드 + 적분) */
+            /* 안쪽: 전류 (피드포워드 + 적분) */
             float ed = 0.0f - id, eq = iq_ref - iq;
             float vd = vd_i;
             float vq = vq_i + R_PHASE * iq_ref + PSI_V_S * w_e;
@@ -428,19 +520,22 @@ static int run_loop_body(const cl_step_t *steps, int n_steps)
             s_id += id; s_iq += iq; s_m += m; s_iqr += iq_ref;
             loops++;
 
-            if (cap && g_cap_n[sidx] < CAP_MS) {
-                uint32_t el = HAL_GetTick() - t0;
-                if (el != c_ms && c_k > 0) {
+            if (cap && g_cap_n[sidx] < CAP_N) {
+                uint32_t slot = (HAL_GetTick() - t0) / g_cap_dt;
+                if (slot != c_slot && c_k > 0) {
                     cap_t *c = &g_cap[sidx][g_cap_n[sidx]++];
-                    c->ms    = (uint16_t)c_ms;
-                    c->rpm10 = (int16_t)(c_rpm / (float)c_k * 10.0f);
-                    c->iqr10 = (int16_t)(c_iqr / (float)c_k * 10.0f);
-                    c->iq10  = (int16_t)(c_iq  / (float)c_k * 10.0f);
-                    c_rpm = c_iqr = c_iq = 0.0f; c_k = 0; c_ms = el;
+                    float k = (float)c_k;
+                    c->ms = (uint16_t)(c_slot * g_cap_dt);
+                    c->a = sat16(c_a / k); c->b = sat16(c_b / k); c->c = sat16(c_c / k); c->d = sat16(c_d / k);
+                    c_a = c_b = c_c = c_d = 0.0f; c_k = 0; c_slot = slot;
                 }
-                c_rpm += w_e / (float)PP * (float)g_sign * (60.0f / TWO_PI);
-                c_iqr += iq_ref * 1000.0f;
-                c_iq  += iq * 1000.0f;
+                float rpm_now = w_e / (float)PP * (float)g_sign * (60.0f / TWO_PI);
+                if (st->mode == MODE_POS) {
+                    c_a += e_p * RAD2DEG * 100.0f; c_b += rpm_now * 10.0f;
+                    c_c += iq_ref * 10000.0f;      c_d += pos * RAD2DEG * 10.0f;
+                } else {
+                    c_a += rpm_now * 10.0f; c_b += iq_ref * 10000.0f; c_c += iq * 10000.0f;
+                }
                 c_k++;
             }
 
@@ -449,14 +544,24 @@ static int run_loop_body(const cl_step_t *steps, int n_steps)
                 float dt  = (float)(now - tlog) / 1000.0f;
                 float rpm = (float)(enc_acc - acc_log) * 360.0f / (float)CPR / dt / 6.0f;
                 float mid = (float)(s_id / loops), miq = (float)(s_iq / loops);
-                float ref_show = st->is_speed ? st->ref : st->ref * 1000.0f;
                 char b1[16], b2[16], b3[16], b4[16], b5[16], b6[16];
-                bsp_printf("  %5lu ms  %7s  %7s  %7s  %7s  %7s  %6s  %5lu  %4lu Hz\r\n",
-                           (unsigned long)(now - t0), f1(ref_show, b6), f1(rpm, b1),
-                           f1((float)(s_iqr / loops) * 1000.0f, b2),
-                           f1(miq * 1000.0f, b3), f1(mid * 1000.0f, b4),
-                           f1((float)(s_m / loops) * 100.0f, b5),
-                           (unsigned long)(100u * nsat / loops), (unsigned long)((float)loops / dt));
+                if (st->mode == MODE_POS) {
+                    char b7[16];
+                    bsp_printf("  %5lu ms  %8s  %8s  %8s  %8s  %7s  %7s  %7s  %4lu Hz\r\n",
+                               (unsigned long)(now - t0), f1(p_cmd * RAD2DEG, b1), f1(pos * RAD2DEG, b2),
+                               f2(e_p * RAD2DEG, b3), f2(e_max * RAD2DEG, b4), f1(rpm, b5),
+                               f1((float)(s_iqr / loops) * 1000.0f, b6), f1(miq * 1000.0f, b7),
+                               (unsigned long)((float)loops / dt));
+                    e_max = 0.0f;
+                } else {
+                    float ref_show = (st->mode == MODE_SPEED) ? st->ref : st->ref * 1000.0f;
+                    bsp_printf("  %5lu ms  %7s  %7s  %7s  %7s  %7s  %6s  %5lu  %4lu Hz\r\n",
+                               (unsigned long)(now - t0), f1(ref_show, b6), f1(rpm, b1),
+                               f1((float)(s_iqr / loops) * 1000.0f, b2),
+                               f1(miq * 1000.0f, b3), f1(mid * 1000.0f, b4),
+                               f1((float)(s_m / loops) * 100.0f, b5),
+                               (unsigned long)(100u * nsat / loops), (unsigned long)((float)loops / dt));
+                }
                 acc_log = enc_acc; tlog = now; loops = 0; nsat = 0;
                 s_id = s_iq = s_m = s_iqr = 0;
 
@@ -473,10 +578,10 @@ static int run_loop_body(const cl_step_t *steps, int n_steps)
 static void do_current_loop_handsoff(void)
 {
     static const cl_step_t seq[] = {
-        {  0.000f, 0, 2000u, "전류 1: iq=0 (토크 0, 그대로 있어야)" },
-        {  0.040f, 0, 4000u, "전류 2: iq=+40mA (가속)" },
-        { -0.040f, 0, 4000u, "전류 3: iq=-40mA (감속 후 역회전)" },
-        {  0.000f, 0, 2000u, "전류 4: iq=0 (토크 0, 관성으로 감속)" },
+        {  0.000f, MODE_CURRENT, 2000u, "전류 1: iq=0 (토크 0, 그대로 있어야)" },
+        {  0.040f, MODE_CURRENT, 4000u, "전류 2: iq=+40mA (가속)" },
+        { -0.040f, MODE_CURRENT, 4000u, "전류 3: iq=-40mA (감속 후 역회전)" },
+        {  0.000f, MODE_CURRENT, 2000u, "전류 4: iq=0 (토크 0, 관성으로 감속)" },
     };
     run_current_loop(seq, (int)(sizeof(seq) / sizeof(seq[0])));
 }
@@ -485,7 +590,7 @@ static void do_current_loop_handsoff(void)
 static void do_current_loop_brake(void)
 {
     static const cl_step_t seq[] = {
-        { 0.100f, 0, 20000u, "전류 브레이크: iq=+100mA 20s — 아무 때나 잡아보세요" },
+        { 0.100f, MODE_CURRENT, 20000u, "전류 브레이크: iq=+100mA 20s — 아무 때나 잡아보세요" },
     };
     run_current_loop(seq, 1);
 }
@@ -494,44 +599,84 @@ static void do_current_loop_brake(void)
 static void do_speed_steps(void)
 {
     static const cl_step_t seq[] = {
-        {    0.0f, 1, 2000u, "속도 1: 0 rpm 유지" },
-        {  100.0f, 1, 3000u, "속도 2: 100 rpm" },
-        {  200.0f, 1, 3000u, "속도 3: 200 rpm" },
-        { -150.0f, 1, 3000u, "속도 4: -150 rpm (역방향)" },
-        {    0.0f, 1, 2000u, "속도 5: 0 rpm" },
+        {    0.0f, MODE_SPEED, 2000u, "속도 1: 0 rpm 유지" },
+        {  100.0f, MODE_SPEED, 3000u, "속도 2: 100 rpm" },
+        {  200.0f, MODE_SPEED, 3000u, "속도 3: 200 rpm" },
+        { -150.0f, MODE_SPEED, 3000u, "속도 4: -150 rpm (역방향)" },
+        {    0.0f, MODE_SPEED, 2000u, "속도 5: 0 rpm" },
     };
-    g_cap_on = 1;
+    g_cap_on = 1; g_cap_dt = 1u;
+    for (int s = 0; s < CAP_STEPS; s++) { g_cap_n[s] = 0; }
     run_current_loop(seq, (int)(sizeof(seq) / sizeof(seq[0])));
     g_cap_on = 0;
     g_cap_pending = 1;
 }
 
-/* 's' 의 1 ms 기록 출력 — PWM 을 끈 뒤에 부른다 (출력에 수 초 걸림) */
+/* p: 위치 루프 (손 안 댐) — 궤적 이동, 한 바퀴 넘는 멀티턴, 복귀, 궤적 없는 계단과 비교 */
+static void do_position_moves(void)
+{
+    static const cl_step_t seq[] = {
+        {   0.0f, MODE_POS, 2000u, "위치 1: 0도 유지" },
+        {  90.0f, MODE_POS, 2000u, "위치 2: +90도" },
+        { 450.0f, MODE_POS, 3000u, "위치 3: +450도 (한 바퀴 더)" },
+        {   0.0f, MODE_POS, 3000u, "위치 4: 0도로 복귀 (-450도)" },
+        {  30.0f, MODE_POS, 2000u, "위치 5: +30도 계단", 0.0f, 1 },
+        {   0.0f, MODE_POS, 2000u, "위치 6: 0도" },
+    };
+    g_cap_on = 1; g_cap_dt = 3u;
+    for (int s = 0; s < CAP_STEPS; s++) { g_cap_n[s] = 0; }
+    run_current_loop(seq, (int)(sizeof(seq) / sizeof(seq[0])));
+    g_cap_on = 0;
+    g_cap_pending = 1;
+}
+
+/* h: 위치 유지 브레이크 테스트 — 밀면 버티고, 놓으면 제자리로 돌아오는지 */
+static void do_position_hold(void)
+{
+    static const cl_step_t seq[] = {
+        { 0.0f, MODE_POS, 20000u, "위치 유지: 0도 20s — 밀었다 놓아보세요 (90도 넘게 밀면 정지)" },
+    };
+    run_current_loop(seq, 1);
+}
+
+/* 고해상도 기록 출력 — PWM 을 끈 뒤에 부른다 (출력에 수 초 걸림) */
 static void dump_capture(void)
 {
     for (int s = 0; s < CAP_STEPS; s++) {
+        if (g_cap_n[s] == 0) { continue; }
         char b0[16];
-        bsp_printf("\r\n[1ms 기록 %d] 지령 %s rpm, %u 샘플\r\n   ms     rpm   iq지령   iq[mA]\r\n",
-                   s + 1, f1(g_cap_ref[s], b0), (unsigned)g_cap_n[s]);
+        if (g_cap_mode[s] == MODE_POS) {
+            bsp_printf("\r\n[%lums 기록 %d] 목표 %s deg, %u 샘플\r\n   ms  위치[deg]  오차[deg]    rpm   iq지령\r\n",
+                       (unsigned long)g_cap_dt, s + 1, f1(g_cap_ref[s], b0), (unsigned)g_cap_n[s]);
+        } else {
+            bsp_printf("\r\n[%lums 기록 %d] 지령 %s rpm, %u 샘플\r\n   ms     rpm   iq지령   iq[mA]\r\n",
+                       (unsigned long)g_cap_dt, s + 1, f1(g_cap_ref[s], b0), (unsigned)g_cap_n[s]);
+        }
         for (int i = 0; i < g_cap_n[s]; i++) {
             const cap_t *c = &g_cap[s][i];
-            char b1[16], b2[16], b3[16];
-            bsp_printf("  %3u  %7s  %7s  %7s\r\n", (unsigned)c->ms,
-                       f1((float)c->rpm10 / 10.0f, b1), f1((float)c->iqr10 / 10.0f, b2),
-                       f1((float)c->iq10 / 10.0f, b3));
+            char b1[16], b2[16], b3[16], b4[16];
+            if (g_cap_mode[s] == MODE_POS) {
+                bsp_printf("  %3u  %8s  %8s  %7s  %7s\r\n", (unsigned)c->ms,
+                           f1((float)c->d / 10.0f, b1), f2((float)c->a / 100.0f, b2),
+                           f1((float)c->b / 10.0f, b3), f1((float)c->c / 10.0f, b4));
+            } else {
+                bsp_printf("  %3u  %7s  %7s  %7s\r\n", (unsigned)c->ms,
+                           f1((float)c->a / 10.0f, b1), f1((float)c->b / 10.0f, b2),
+                           f1((float)c->c / 10.0f, b3));
+            }
         }
     }
-    bsp_uart_puts("[1ms 기록 끝]\r\n");
+    bsp_uart_puts("[기록 끝]\r\n");
 }
 
 /* v: 대역폭 비교 — 같은 100 rpm 에서 게인만 바꿔 한 바퀴 주기 속도 출렁임이 줄어드는지 */
 static void do_speed_bw_compare(void)
 {
     static const cl_step_t seq[] = {
-        { 100.0f, 1, 4000u, "대역폭 1: 5 Hz",  5.0f },
-        { 100.0f, 1, 4000u, "대역폭 2: 10 Hz", 10.0f },
-        { 100.0f, 1, 4000u, "대역폭 3: 15 Hz", 15.0f },
-        {   0.0f, 1, 2000u, "대역폭 4: 0 rpm 정지 (15 Hz)", 15.0f },
+        { 100.0f, MODE_SPEED, 4000u, "대역폭 1: 5 Hz",  5.0f },
+        { 100.0f, MODE_SPEED, 4000u, "대역폭 2: 10 Hz", 10.0f },
+        { 100.0f, MODE_SPEED, 4000u, "대역폭 3: 15 Hz", 15.0f },
+        {   0.0f, MODE_SPEED, 2000u, "대역폭 4: 0 rpm 정지 (15 Hz)", 15.0f },
     };
     run_current_loop(seq, (int)(sizeof(seq) / sizeof(seq[0])));
 }
@@ -540,7 +685,7 @@ static void do_speed_bw_compare(void)
 static void do_speed_brake(void)
 {
     static const cl_step_t seq[] = {
-        { 150.0f, 1, 20000u, "속도 브레이크: 150 rpm 20s — 아무 때나 눌러보세요" },
+        { 150.0f, MODE_SPEED, 20000u, "속도 브레이크: 150 rpm 20s — 아무 때나 눌러보세요" },
     };
     run_current_loop(seq, 1);
 }
@@ -709,10 +854,11 @@ void app_main(void)
     while (1) {
         bsp_uart_puts("\r\n명령: c=캘리브레이션  r=손 안 대는 주행  b=브레이크 테스트(20s)  f=엔코더 필터 비교  x=각도 외삽 τ 스윕\r\n"
                       "      i=전류 루프 (손 안 댐)  k=전류 루프 브레이크 테스트(20s)\r\n"
-                      "      s=속도 루프 계단 응답 (손 안 댐)  v=속도 대역폭 비교  w=속도 루프 브레이크 테스트(20s)  (실행 중 q=정지)\r\n");
+                      "      s=속도 루프 계단 응답 (손 안 댐)  v=속도 대역폭 비교  w=속도 루프 브레이크 테스트(20s)\r\n"
+                      "      p=위치 루프 이동 (손 안 댐)  h=위치 유지 브레이크 테스트(20s)  (실행 중 q=정지)\r\n");
         uint8_t ch;
         wait_cmd(&ch);
-        if (ch != 'c' && ch != 'r' && ch != 'b' && ch != 'f' && ch != 'x' && ch != 'i' && ch != 'k' && ch != 's' && ch != 'v' && ch != 'w') { continue; }
+        if (ch != 'c' && ch != 'r' && ch != 'b' && ch != 'f' && ch != 'x' && ch != 'i' && ch != 'k' && ch != 's' && ch != 'v' && ch != 'w' && ch != 'p' && ch != 'h') { continue; }
 
         measure_cs_offset();   /* PWM off 인 지금 영점을 새로 잰다 (온도 드리프트 대비) */
         bsp_pwm_start();
@@ -726,6 +872,8 @@ void app_main(void)
         if (ch == 's') { do_speed_steps(); }
         if (ch == 'v') { do_speed_bw_compare(); }
         if (ch == 'w') { do_speed_brake(); }
+        if (ch == 'p') { do_position_moves(); }
+        if (ch == 'h') { do_position_hold(); }
         coast(800u);
         bsp_pwm_stop();
         bsp_uart_puts("PWM 정지 (6게이트 off)\r\n");
