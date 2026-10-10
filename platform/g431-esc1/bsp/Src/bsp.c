@@ -142,6 +142,10 @@ void bsp_pwm_stop(void)
 
     /* 확실히 끊는다. OCIdleState=Reset 이므로 6핀 모두 Low = MOSFET 전부 off */
     __HAL_TIM_MOE_DISABLE(BSP_TIM);
+
+    /* HAL 은 채널을 다 끄면 카운터까지 멈춘다. 카운터는 계속 돌려야 전류 센싱 ADC
+       트리거가 끊기지 않고 꼭대기 정렬도 유지된다. MOE=0 이라 출력은 전부 off */
+    __HAL_TIM_ENABLE(BSP_TIM);
 }
 
 void bsp_pwm_set_duty(float du, float dv, float dw)
@@ -163,6 +167,69 @@ void bsp_pwm_set_vector(float theta_e, float m)
     bsp_pwm_set_duty(0.5f + amp * cosf(theta_e),
                      0.5f + amp * cosf(theta_e - k120),
                      0.5f + amp * cosf(theta_e + k120));
+}
+
+/* ===================== 전류 센싱 (OPAMP + ADC injected) ===================== */
+
+extern ADC_HandleTypeDef   hadc1, hadc2;
+extern OPAMP_HandleTypeDef hopamp1, hopamp2, hopamp3;
+
+int bsp_cs_trigger_point(uint32_t *cnt, uint32_t *dir_down)
+{
+    __HAL_ADC_CLEAR_FLAG(&hadc1, ADC_FLAG_JEOS);
+    uint32_t t0 = HAL_GetTick();
+    while (!__HAL_ADC_GET_FLAG(&hadc1, ADC_FLAG_JEOS)) {
+        if (HAL_GetTick() - t0 > 5u) { return -1; }   /* 트리거가 안 온다 */
+    }
+    *cnt      = BSP_TIM->Instance->CNT;
+    *dir_down = (BSP_TIM->Instance->CR1 & TIM_CR1_DIR) ? 1u : 0u;
+    return 0;
+}
+
+/* 카운터를 멈추고 UG 로 다시 시작한다. UG 순간 반복 카운터에 실릴 값(rcr_at_ug)에
+   따라 Update(=ADC 트리거)가 꼭대기에 올지 바닥에 올지가 갈린다. 이후 RCR=1. */
+static void tim1_restart_with_rcr(uint32_t rcr_at_ug)
+{
+    TIM_TypeDef *t = BSP_TIM->Instance;
+    t->CR1 &= ~TIM_CR1_CEN;
+    t->RCR  = rcr_at_ug;
+    t->EGR  = TIM_EGR_UG;          /* CNT=0, 반복 카운터 = rcr_at_ug */
+    t->RCR  = 1u;                  /* 다음 재장전부터 적용 */
+    t->SR   = 0u;
+    t->CR1 |= TIM_CR1_CEN;
+}
+
+int bsp_cs_init(uint32_t *trig_cnt)
+{
+    HAL_OPAMP_Start(&hopamp1);
+    HAL_OPAMP_Start(&hopamp2);
+    HAL_OPAMP_Start(&hopamp3);
+
+    HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
+    HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED);
+    HAL_ADCEx_InjectedStart(&hadc1);
+    HAL_ADCEx_InjectedStart(&hadc2);
+
+    /* 두 시작 방법을 시험해서 꼭대기(하강 중, CNT 가 ARR 근처)에서 끝나는 쪽을 쓴다 */
+    for (uint32_t rcr0 = 0; rcr0 <= 1u; rcr0++) {
+        tim1_restart_with_rcr(rcr0);
+        HAL_Delay(2);
+        int top = 1;
+        uint32_t c = 0, d = 0;
+        for (int k = 0; k < 8; k++) {
+            if (bsp_cs_trigger_point(&c, &d) != 0 || d == 0u || c < BSP_PWM_ARR / 2u) { top = 0; break; }
+        }
+        if (top) { *trig_cnt = c; return 0; }
+    }
+    *trig_cnt = 0;
+    return -1;
+}
+
+void bsp_cs_read_raw(uint16_t *u, uint16_t *v, uint16_t *w)
+{
+    *u = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_1);
+    *v = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_1);
+    *w = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_2);
 }
 
 /**

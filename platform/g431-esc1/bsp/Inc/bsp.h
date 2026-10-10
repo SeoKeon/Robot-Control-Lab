@@ -100,6 +100,35 @@ int bsp_as5600_read_raw(uint16_t *raw);
 /** AGC(자동 게인) 읽기. 3.3V 모드에서 0~128, 클수록 자석이 멀다. 이상적 ~64 */
 int bsp_as5600_read_agc(uint8_t *agc);
 
+/* --- 전류 센싱 (3션트) ----------------------------------------------------
+ * 션트 → OPAMP1/2/3 (PGA ×16, 반전입력 IO0 = 보드 바이어스) → 내부 연결 →
+ *   U: ADC1 injected rank1 (VOPAMP1)
+ *   V: ADC2 injected rank1 (VOPAMP2)
+ *   W: ADC2 injected rank2 (VOPAMP3)
+ * 트리거: TIM1 TRGO(Update), RCR=1 → PWM 주기당 1회.
+ *   **카운터 꼭대기**에서 샘플해야 한다 — 그때 하단 MOSFET 3개가 모두 ON 이라
+ *   션트에 상전류가 흐른다. 바닥에서는 상단이 ON 이라 션트 전류가 0 이다.
+ *   bsp_cs_init() 이 실제 트리거 시점을 재서 꼭대기로 맞춘다.
+ *
+ * 환산: 션트 3 mΩ, 유효 게인 −9.14 V/V (NuttX / SimpleFOC 의 이 보드 값)
+ *   → 1 count = 3.3/4096 / (0.003 × 9.14) ≈ 29.4 mA, 부호 반전.
+ *   이 보드는 40 A 급이라 0.2 A 급 모터에선 몇 count 밖에 안 된다 — 평균이 필요하다.
+ */
+#define BSP_CS_A_PER_COUNT   (-0.02938f)
+
+/**
+ * OPAMP 시작, ADC 보정, injected 변환 대기 시작, TIM1 카운터를 돌려 트리거를
+ * 꼭대기에 정렬한다. **PWM 출력을 켜기 전에** 한 번 부른다.
+ * 반환: 0 = 꼭대기 정렬 성공, -1 = 실패. trig_cnt 에 변환 직후 카운터 값.
+ */
+int  bsp_cs_init(uint32_t *trig_cnt);
+
+/** 가장 최근 PWM 주기의 세 상 ADC 원시값 (0~4095) */
+void bsp_cs_read_raw(uint16_t *u, uint16_t *v, uint16_t *w);
+
+/** 진단: 다음 변환이 끝난 순간의 TIM1 카운터 값과 방향(1=하강). 실패 시 -1 */
+int  bsp_cs_trigger_point(uint32_t *cnt, uint32_t *dir_down);
+
 /* --- 앞으로 추가될 자리 ---------------------------------------------------
  * CubeMX(platform/g431-esc1/g431-esc1.ioc)에서 주변장치를 켤 때마다
  * 여기에 래퍼를 추가한다. 실험 코드가 레지스터/핀을 직접 만지지 않게.
