@@ -1,0 +1,167 @@
+
+[캘리브레이션 1/2] 30도씩 앞으로 1바퀴, 뒤로 1바퀴
+  1바퀴 기계 이동 51.4 deg (기대 51.4) -> 부호 +1
+  오프셋 -72.5 deg(전기)  흩어짐 최대 7.9  앞뒤 차 -0.1
+
+[캘리브레이션 2/2] 30도씩 앞으로 1바퀴, 뒤로 1바퀴
+  1바퀴 기계 이동 51.6 deg (기대 51.4) -> 부호 +1
+  오프셋 -72.5 deg(전기)  흩어짐 최대 7.8  앞뒤 차 -0.1
+
+=> 오프셋 확정 -72.5 deg(전기)  (1회차-2회차 차이 0.0)
+
+[정류 1: 저속 정방향] m=25%  lead +90deg  5s
+  t   100 ms  rpm   189.1  loop 2010 Hz
+  t   200 ms  rpm   203.0  loop 1950 Hz
+  t   300 ms  rpm   219.0  loop 1940 Hz
+  t   400 ms  rpm   209.6  loop 1950 Hz
+  t   500 ms  rpm   204.3  loop 1940 Hz
+  t   600 ms  rpm   221.9  loop 1950 Hz
+  t   700 ms  rpm   206.8  loop 1950 Hz
+  t   800 ms  rpm   207.4  loop 1940 Hz
+  t   900 ms  rpm   221.5  loop 1950 Hz
+  t  1000 ms  rpm   204.3  loop 1950 Hz
+  t  1100 ms  rpm   210.4  loop 1940 Hz
+  t  1200 ms  rpm   219.7  loop 1950 Hz
+  t  1300 ms  rpm   202.0  loop 1950 Hz
+  t  1400 ms  rpm   213.6  loop 1940 Hz
+  t  1500 ms  rpm   218.7  loop 1950 Hz
+  t  1600 ms  rpm   200.4  loop 1940 Hz
+  t  1700 ms  rpm   217.2  loop 1950 Hz
+  t  1800 ms  rpm   214.6  loop 1950 Hz
+  t  1900 ms  rpm   201.0  loop 1940 Hz
+  t  2000 ms  rpm   219.9  loop 1950 Hz
+  t  2100 ms  rpm   210.6  loop 1950 Hz
+  t  2200 ms  rpm   204.1  loop 1940 Hz
+  t  2300 ms  rpm   221.5  loop 1950 Hz
+  t  2400 ms  rpm   207.4  loop 1940 Hz
+  t  2500 ms  rpm   207.7  loop 1950 Hz
+  t  2600 ms  rpm   221.9  loop 1950 Hz
+  t  2700 ms  rpm   204.1  loop 1940 Hz
+  t  2800 ms  rpm   210.9  loop 1950 Hz
+  t  2900 ms  rpm   220.8  loop 1950 Hz
+  t  3000 ms  rpm   201.4  loop 1940 Hz
+  t  3100 ms  rpm   213.6  loop 1950 Hz
+  t  3200 ms  rpm   217.2  loop 1940 Hz
+  t  3300 ms  rpm   201.6  loop 1950 Hz
+  t  3400 ms  rpm   217.2  loop 1950 Hz
+  t  3500 ms  rpm   214.9  loop 1940 Hz
+  t  3600 ms  rpm   203.0  loop 1950 Hz
+  t  3700 ms  rpm   220.3  loop 1950 Hz
+  t  3800 ms  rpm   210.1  loop 1940 Hz
+  t  3900 ms  rpm   204.9  loop 1950 Hz
+  t  4000 ms  rpm   220.5  loop 1940 Hz
+  t  4100 ms  rpm   208.6  loop 1950 Hz
+  t  4200 ms  rpm   207.3  loop 1950 Hz
+  t  4300 ms  rpm   220.5  loop 1940 Hz
+  t  4400 ms  rpm   205.2  loop 1950 Hz
+  t  4500 ms  rpm   211.1  loop 1950 Hz
+  t  4600 ms  rpm   219.7  loop 1940 Hz
+  t  4700 ms  rpm   202.1  loop 1950 Hz
+  t  4800 ms  rpm   212.5  loop 1940 Hz
+  t  4900 ms  rpm   218.6  loop 1950 Hz
+  t  5000 ms  rpm   201.9  loop 1950 Hz
+
+[정류 2: 정방향] m=30%  lead +90deg  5s
+  t   100 ms  rpm   268.4  loop 2020 Hz
+  t   200 ms  rpm   251.5  loop 1950 Hz
+  t   300 ms  rpm   253.9  loop 1940 Hz
+  t   400 ms  rpm   259.6  loop 1950 Hz
+  t   500 ms  rpm   248.1  loop 1950 Hz
+  t   600 ms  rpm   262.5  loop 1940 Hz
+  t   700 ms  rpm   247.4  loop 1950 Hz
+  t   800 ms  rpm   259.1  loop 1940 Hz
+  t   900 ms  rpm   253.9  loop 1950 Hz
+  t  1000 ms  rpm   253.4  loop 1950 Hz
+  t  1100 ms  rpm   259.9  loop 1940 Hz
+  t  1200 ms  rpm   247.1  loop 1950 Hz
+  t  1300 ms  rpm   263.7  loop 1950 Hz
+  t  1400 ms  rpm   246.1  loop 1940 Hz
+  t  1500 ms  rpm   258.8  loop 1950 Hz
+  t  1600 ms  rpm   253.1  loop 1940 Hz
+  t  1700 ms  rpm   252.1  loop 1950 Hz
+  t  1800 ms  rpm   262.2  loop 1950 Hz
+  t  1900 ms  rpm   244.6  loop 1940 Hz
+  t  2000 ms  rpm   263.7  loop 1950 Hz
+  t  2100 ms  rpm   249.2  loop 1950 Hz
+  t  2200 ms  rpm   256.1  loop 1940 Hz
+  t  2300 ms  rpm   256.3  loop 1950 Hz
+  t  2400 ms  rpm   250.8  loop 1950 Hz
+  t  2500 ms  rpm   261.5  loop 1940 Hz
+  t  2600 ms  rpm   246.1  loop 1950 Hz
+  t  2700 ms  rpm   261.3  loop 1940 Hz
+  t  2800 ms  rpm   250.8  loop 1950 Hz
+  t  2900 ms  rpm   256.5  loop 1950 Hz
+  t  3000 ms  rpm   256.2  loop 1940 Hz
+  t  3100 ms  rpm   249.5  loop 1950 Hz
+  t  3200 ms  rpm   263.4  loop 1950 Hz
+  t  3300 ms  rpm   244.8  loop 1940 Hz
+  t  3400 ms  rpm   261.8  loop 1950 Hz
+  t  3500 ms  rpm   250.2  loop 1940 Hz
+  t  3600 ms  rpm   255.3  loop 1950 Hz
+  t  3700 ms  rpm   259.0  loop 1950 Hz
+  t  3800 ms  rpm   246.5  loop 1940 Hz
+  t  3900 ms  rpm   263.2  loop 1950 Hz
+  t  4000 ms  rpm   247.3  loop 1950 Hz
+  t  4100 ms  rpm   259.3  loop 1940 Hz
+  t  4200 ms  rpm   252.7  loop 1950 Hz
+  t  4300 ms  rpm   252.5  loop 1940 Hz
+  t  4400 ms  rpm   260.6  loop 1950 Hz
+  t  4500 ms  rpm   247.6  loop 1950 Hz
+  t  4600 ms  rpm   262.5  loop 1940 Hz
+  t  4700 ms  rpm   248.0  loop 1950 Hz
+  t  4800 ms  rpm   259.4  loop 1950 Hz
+  t  4900 ms  rpm   253.1  loop 1940 Hz
+  t  5000 ms  rpm   252.0  loop 1950 Hz
+
+[정류 3: 역방향] m=30%  lead -90deg  5s
+  t   100 ms  rpm  -223.7  loop 2020 Hz
+  t   200 ms  rpm  -245.2  loop 1950 Hz
+  t   300 ms  rpm  -258.8  loop 1940 Hz
+  t   400 ms  rpm  -242.3  loop 1950 Hz
+  t   500 ms  rpm  -258.8  loop 1950 Hz
+  t   600 ms  rpm  -247.6  loop 1940 Hz
+  t   700 ms  rpm  -249.8  loop 1950 Hz
+  t   800 ms  rpm  -255.6  loop 1940 Hz
+  t   900 ms  rpm  -241.7  loop 1950 Hz
+  t  1000 ms  rpm  -260.4  loop 1950 Hz
+  t  1100 ms  rpm  -242.6  loop 1940 Hz
+  t  1200 ms  rpm  -255.5  loop 1950 Hz
+  t  1300 ms  rpm  -252.0  loop 1950 Hz
+  t  1400 ms  rpm  -244.0  loop 1940 Hz
+  t  1500 ms  rpm  -259.7  loop 1950 Hz
+  t  1600 ms  rpm  -241.3  loop 1950 Hz
+  t  1700 ms  rpm  -257.8  loop 1940 Hz
+  t  1800 ms  rpm  -247.1  loop 1950 Hz
+  t  1900 ms  rpm  -250.6  loop 1950 Hz
+  t  2000 ms  rpm  -255.5  loop 1940 Hz
+  t  2100 ms  rpm  -242.1  loop 1950 Hz
+  t  2200 ms  rpm  -260.4  loop 1950 Hz
+  t  2300 ms  rpm  -242.4  loop 1940 Hz
+  t  2400 ms  rpm  -254.6  loop 1950 Hz
+  t  2500 ms  rpm  -250.0  loop 1940 Hz
+  t  2600 ms  rpm  -245.9  loop 1950 Hz
+  t  2700 ms  rpm  -259.6  loop 1950 Hz
+  t  2800 ms  rpm  -240.1  loop 1940 Hz
+  t  2900 ms  rpm  -259.0  loop 1950 Hz
+  t  3000 ms  rpm  -246.4  loop 1950 Hz
+  t  3100 ms  rpm  -249.0  loop 1940 Hz
+  t  3200 ms  rpm  -255.8  loop 1950 Hz
+  t  3300 ms  rpm  -242.7  loop 1950 Hz
+  t  3400 ms  rpm  -259.7  loop 1940 Hz
+  t  3500 ms  rpm  -243.6  loop 1950 Hz
+  t  3600 ms  rpm  -255.8  loop 1950 Hz
+  t  3700 ms  rpm  -249.5  loop 1940 Hz
+  t  3800 ms  rpm  -245.5  loop 1950 Hz
+  t  3900 ms  rpm  -259.0  loop 1950 Hz
+  t  4000 ms  rpm  -239.9  loop 1940 Hz
+  t  4100 ms  rpm  -260.0  loop 1950 Hz
+  t  4200 ms  rpm  -245.1  loop 1940 Hz
+  t  4300 ms  rpm  -251.1  loop 1950 Hz
+  t  4400 ms  rpm  -255.3  loop 1950 Hz
+  t  4500 ms  rpm  -241.0  loop 1940 Hz
+  t  4600 ms  rpm  -260.7  loop 1950 Hz
+  t  4700 ms  rpm  -242.9  loop 1950 Hz
+  t  4800 ms  rpm  -254.9  loop 1940 Hz
+  t  4900 ms  rpm  -250.8  loop 1950 Hz
+  t  5000 ms  rpm  -246.5  loop 1950 Hz
+PWM 정지 (6게이트 off)
