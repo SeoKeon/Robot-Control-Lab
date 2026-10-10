@@ -12,6 +12,7 @@
 
 ### 2026-10
 
+- **10-10** dq 전류 관측 — 정지 시 id≈0·iq 159mA 로 변환 검증, 회전 시 id 는 각도 지연 탓. AS5600 필터로 지연 1.68→0.85ms ([log](log/2026-10-10-dq-observation-and-encoder-lag.md))
 - **10-10** 전류 센싱 브링업 — 내장 OPAMP ×16 + ADC, 꼭대기 샘플링 정렬. 정지 벡터에서 +234/−103/−132 mA, 세 상 합 ≈ 0 ([log](log/2026-10-10-current-sense-bringup.md))
 - **10-10** 첫 클로즈드루프 🎉 — 오프셋 캘리브레이션(−72.5°, 2회 차이 0.0°) + 엔코더 기반 정류. 정/역 255/−251 rpm, 잡았다 놓아도 0.5초 안에 복귀(탈조 없음) ([log](log/2026-10-10-first-closed-loop-commutation.md))
 - **10-10** 지그 장착 + 엔코더 검증 — 드리프트 −44° → ±1°, 2회 재현, 회전 중 AGC 고정(PWM 간섭 없음) ([log](log/2026-10-10-jig-and-encoder-validation.md))
