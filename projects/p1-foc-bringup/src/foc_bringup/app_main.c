@@ -288,7 +288,7 @@ static int run_commutation(float m, int lead, uint32_t ms, const char *label)
  *
  * 속도 루프 (캐스케이드 바깥): 속도 PI → iq 지령 (±IQ_LIM 으로 제한) → 위 전류 루프.
  *   플랜트 J·dω/dt = Kt·iq − 마찰.  J ≈ 5e-6 kg·m² (가속 데이터 역산), Kt = 1.5·PP·ψ.
- *   대역폭 목표 ωc = 2π·5 Hz → Kp = J·ωc/Kt, Ki = Kp·ωc/4. 전류 루프(수 ms)보다 충분히 느리다.
+ *   대역폭 목표 ωc → Kp = J·ωc/Kt, Ki = Kp·ωc/4. 전류 루프(수 ms)보다 충분히 느리게 둔다.
  */
 #define R_PHASE   10.5f       /* Ω, 실측 상저항 (상간 21Ω / 2) */
 #define PSI_V_S   0.00814f    /* 역기전력 상수 [V·s/rad 전기], τ 스윕 데이터에서 계산 */
@@ -299,7 +299,7 @@ static int run_commutation(float m, int lead, uint32_t ms, const char *label)
 
 #define J_KGM2    5.0e-6f     /* 로터 관성 (추정) */
 #define KT_NM_A   (1.5f * (float)PP * PSI_V_S)   /* 토크 상수 ≈ 0.086 N·m/A */
-#define BW_SPD_HZ 5.0f        /* 속도 루프 기본 목표 대역폭 → Kp ≈ 1.8e-3 A/(rad/s), Ki ≈ 0.014 A/rad */
+#define BW_SPD_HZ 15.0f       /* 속도 루프 기본 목표 대역폭 → Kp ≈ 5.5e-3 A/(rad/s). 5 Hz 는 한 바퀴 부하를 못 누른다 */
 #define IQ_LIM    0.15f       /* 속도 루프가 낼 수 있는 최대 iq [A] */
 
 typedef struct {
