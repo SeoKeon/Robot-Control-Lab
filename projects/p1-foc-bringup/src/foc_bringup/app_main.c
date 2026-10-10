@@ -1,21 +1,41 @@
 /**
- * 엔코더 무전원 판별 테스트 — PWM 없이 손으로 돌려 드리프트 원인 가르기
+ * p1 — 오픈루프 연속 회전 + 엔코더 로깅 (명령각 vs 실제각)
  *
- * 모터에 전류가 전혀 흐르지 않는다 (간섭원 없음). 손으로 축을 돌리면
- * 누적 각도를 찍는다. 정확히 2바퀴 = 720.0도가 나와야 한다.
+ * 오픈루프로 벡터를 돌리면서 AS5600 으로 로터 실제 각도를 같이 읽는다.
+ * "명령각 - 실제각" 오차에 부하각(δ/극쌍수)과 추종 지연이 그대로 드러난다.
+ * FOC 직전의 마지막 관측 실험.
  *
- *   맞게 나옴  -> 기계 고정 정상. 전원 실험의 드리프트는 PWM/자기장 간섭
- *   틀리게 나옴 -> 자석 또는 보드가 기계적으로 미끄러지는 것
+ * 2차 실행 (2026-10-10, 지그 장착): 자석은 플러그에 접착·압입, 스페이서 1mm 로
+ *   MD=1 / AGC=21 (이전 테이프 고정 때 MD=0 / AGC=128). 무전원 손돌리기에서
+ *   737.1도 = 720 + 17.1(raw 차) 로 바퀴 수 정확히 일치 -> 센서·언랩은 깨끗하다.
+ *   남은 의심은 PWM 자기장 간섭 하나 — 그래서 회전 중 AGC 를 같이 찍는다.
+ *
+ * 시리얼로 's' 를 받아야 통전한다 (12V 연결 확인 후 시작).
+ * 실행 전: 12V / 전류 리밋 0.8A / 무부하 / 모터·엔코더 고정 / 선 연속회전 OK
  */
 #include "bsp.h"
 #include <stdlib.h>
 
-#define CPR 4096
+#define POLE_PAIRS   7
+#define M_AMP        0.45f
+#define TICK_MS      2u                 /* 벡터 갱신 500Hz */
+#define LOG_EVERY    50u                /* 100ms 마다 로그 */
+#define TWO_PI       6.2831853f
+#define CPR          4096
 
+/* ---- 엔코더 언랩: 랩어라운드를 누적각으로 ---- */
 static uint16_t enc_prev;
-static int32_t  enc_acc;
+static int32_t  enc_acc;    /* counts, 시작점 기준 누적 */
 
-static void enc_poll(void)
+static void enc_zero(void)
+{
+    uint16_t r = 0;
+    bsp_as5600_read_raw(&r);
+    enc_prev = r;
+    enc_acc  = 0;
+}
+
+static int32_t enc_update(void)   /* 호출할 때마다 읽고 누적 */
 {
     uint16_t r = 0;
     if (bsp_as5600_read_raw(&r) == 0) {
@@ -25,140 +45,99 @@ static void enc_poll(void)
         enc_acc += d;
         enc_prev = r;
     }
+    return enc_acc;
 }
 
-/* ===== I2C 버스 진단 — 하드웨어 I2C 를 잠시 끄고 핀을 직접 본다 ===== */
+/* counts -> 기계각 x10 [deg*10] */
+static int32_t cnt_to_deg10(int32_t c) { return (c * 3600) / CPR; }
 
-extern I2C_HandleTypeDef hi2c1;
-
-#define P_SDA GPIO_PIN_7
-#define P_SCL GPIO_PIN_8
-
-typedef struct { uint16_t sda, scl; } bb_pins_t;
-
-static void bb_dly(void) { for (volatile int i = 0; i < 300; i++) { } }   /* 약 수 us */
-static int  pin_rd(uint16_t p) { return HAL_GPIO_ReadPin(GPIOB, p) == GPIO_PIN_SET; }
-static void pin_hi(uint16_t p) { HAL_GPIO_WritePin(GPIOB, p, GPIO_PIN_SET);   bb_dly(); }  /* 놓기 */
-static void pin_lo(uint16_t p) { HAL_GPIO_WritePin(GPIOB, p, GPIO_PIN_RESET); bb_dly(); }  /* 끌어내림 */
-
-static void pins_mode(uint32_t mode, uint32_t pull)
+/**
+ * 전기각 el_from -> el_to [deg] 를 el_dps 속도로 돌리며 로깅.
+ * cmd0_deg10: 이 구간 시작 시점의 누적 명령 기계각 x10 (연속 표시용)
+ * sign: 엔코더 부호 (+1/-1, 명령 방향과 맞추기)
+ */
+static int32_t sweep(float el_from, float el_to, float el_dps,
+                     int32_t cmd0_deg10, int sign)
 {
-    GPIO_InitTypeDef g = {0};
-    g.Pin   = P_SDA | P_SCL;
-    g.Mode  = mode;
-    g.Pull  = pull;
-    g.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_WritePin(GPIOB, P_SDA | P_SCL, GPIO_PIN_SET);
-    HAL_GPIO_Init(GPIOB, &g);
-    HAL_Delay(2);
-}
+    const float step = el_dps * ((float)TICK_MS / 1000.0f);
+    const float dir  = (el_to > el_from) ? 1.0f : -1.0f;
+    float    el   = el_from;
+    uint32_t tick = 0;
 
-static void bb_start(bb_pins_t b) { pin_hi(b.sda); pin_hi(b.scl); pin_lo(b.sda); pin_lo(b.scl); }
-static void bb_stop(bb_pins_t b)  { pin_lo(b.sda); pin_hi(b.scl); pin_hi(b.sda); }
+    while ((dir > 0.0f && el < el_to) || (dir < 0.0f && el > el_to)) {
+        bsp_pwm_set_vector(el * 0.01745329f, M_AMP);
+        enc_update();
 
-/* 걸려 있는 슬레이브를 풀어준다: SDA 를 놓고 SCL 9발 + STOP */
-static void bb_recover(bb_pins_t b)
-{
-    pin_hi(b.sda);
-    for (int i = 0; i < 9; i++) { pin_lo(b.scl); pin_hi(b.scl); }
-    bb_stop(b);
-}
-
-static int bb_write(bb_pins_t b, uint8_t v)   /* ACK 받으면 1 */
-{
-    for (int i = 7; i >= 0; i--) {
-        if (v & (1u << i)) { pin_hi(b.sda); } else { pin_lo(b.sda); }
-        pin_hi(b.scl);
-        pin_lo(b.scl);
+        if (++tick % LOG_EVERY == 0u) {
+            int32_t cmd10 = cmd0_deg10 + (int32_t)((el - el_from) * 10.0f / POLE_PAIRS);
+            int32_t enc10 = sign * cnt_to_deg10(enc_acc);
+            uint8_t agc = 0;
+            bsp_as5600_read_agc(&agc);   /* PWM 간섭이 있으면 회전 중 AGC 가 출렁인다 */
+            bsp_printf("cmd %6ld.%ld  enc %6ld.%ld  err %5ld.%ld  AGC %3u\r\n",
+                       (long)(cmd10 / 10), (long)labs(cmd10 % 10),
+                       (long)(enc10 / 10), (long)labs(enc10 % 10),
+                       (long)((cmd10 - enc10) / 10), (long)labs((cmd10 - enc10) % 10),
+                       agc);
+        }
+        HAL_Delay(TICK_MS);
+        el += dir * step;
     }
-    pin_hi(b.sda);
-    pin_hi(b.scl);
-    int ack = !pin_rd(b.sda);
-    pin_lo(b.scl);
-    return ack;
-}
-
-static int bb_scan(bb_pins_t b, const char *name)
-{
-    int n = 0;
-    bsp_printf("  %s :", name);
-    for (uint8_t a = 0x08; a < 0x78; a++) {
-        bb_start(b);
-        int ack = bb_write(b, (uint8_t)(a << 1));
-        bb_stop(b);
-        if (ack) { bsp_printf(" 0x%02X", a); n++; }
-    }
-    bsp_printf("  (%d개)\r\n", n);
-    return n;
-}
-
-static void i2c_bus_diag(void)
-{
-    bsp_uart_puts("\r\n--- I2C 버스 진단 ---\r\n");
-    bsp_printf("I2C1 BUSY 플래그 = %lu  (1 이면 누가 SDA 를 잡고 있음)\r\n",
-               (unsigned long)((hi2c1.Instance->ISR >> 15) & 1u));
-
-    HAL_I2C_DeInit(&hi2c1);
-
-    pins_mode(GPIO_MODE_INPUT, GPIO_NOPULL);
-    int sda0 = pin_rd(P_SDA), scl0 = pin_rd(P_SCL);
-    bsp_printf("[1] 대기 레벨 (내부 풀 없음)   SDA=%d SCL=%d   <- 기대 1 1\r\n", sda0, scl0);
-
-    pins_mode(GPIO_MODE_INPUT, GPIO_PULLDOWN);
-    bsp_printf("[2] 내부 풀다운 걸었을 때      SDA=%d SCL=%d   <- 1 이면 보드 10K 풀업 정상\r\n",
-               pin_rd(P_SDA), pin_rd(P_SCL));
-
-    pins_mode(GPIO_MODE_OUTPUT_OD, GPIO_PULLUP);
-    bb_pins_t ok  = { P_SDA, P_SCL };
-    bb_pins_t swp = { P_SCL, P_SDA };
-    bsp_uart_puts("[3] 소프트웨어 I2C 스캔 (버스 복구 후)\r\n");
-    bb_recover(ok);
-    int n_ok = bb_scan(ok, "정상   SDA=PB7 SCL=PB8");
-    bb_recover(swp);
-    int n_sw = bb_scan(swp, "뒤바뀜 SDA=PB8 SCL=PB7");
-
-    bsp_uart_puts("판정: ");
-    if (!sda0 || !scl0) {
-        bsp_uart_puts("선이 Low 로 눌려 있다 -> AS5600 VCC 가 안 들어옴(보호다이오드가 끌어내림) 또는 GND 단락\r\n");
-    } else if (n_ok) {
-        bsp_uart_puts("AS5600 응답함 -> 배선 OK. 아래 하드웨어 재스캔도 0x36 이면 정상\r\n");
-    } else if (n_sw) {
-        bsp_uart_puts("SDA 와 SCL 이 뒤바뀌어 연결돼 있다 -> 두 선을 서로 바꿔 꽂을 것\r\n");
-    } else {
-        bsp_uart_puts("선은 High 인데 아무도 응답 없음 -> SDA/SCL 이 AS5600 까지 안 감(단선) 또는 칩 불량\r\n");
-    }
-
-    HAL_I2C_Init(&hi2c1);   /* MspInit 이 PB7/PB8 을 다시 I2C AF 로 되돌린다 */
-    bsp_uart_puts("[4] 하드웨어 I2C 재스캔 -> ");
-    bsp_i2c_scan();
-    bsp_uart_puts("--------------------\r\n");
+    return cmd0_deg10 + (int32_t)((el_to - el_from) * 10.0f / POLE_PAIRS);
 }
 
 void app_main(void)
 {
-    bsp_uart_puts("\r\n=== encoder hand-turn test (PWM OFF) ===\r\n");
-    i2c_bus_diag();   /* 0x36 이 없으면 아래 값은 전부 0 — 판정 줄을 볼 것 */
-    bsp_uart_puts("축에 기준 표시를 하고, 정확히 2바퀴 돌린 뒤 2바퀴 되돌리세요.\r\n");
-    bsp_uart_puts("2바퀴 = +720.0 / 되돌리면 0.0 근처가 나와야 한다.\r\n\r\n");
-
-    uint16_t r0 = 0;
-    bsp_as5600_read_raw(&r0);
-    enc_prev = r0;
-    enc_acc  = 0;
-
-    uint32_t n = 0;
-    while (1)
+    bsp_uart_puts("\r\n=== open-loop + encoder logging ===\r\n");
     {
-        /* 촘촘히 폴링(간섭 없는 조건에서 랩어라운드 놓치지 않게) */
-        for (int i = 0; i < 20; i++) { enc_poll(); HAL_Delay(10); }
-
-        int32_t deg10 = (enc_acc * 3600) / CPR;
         uint8_t st = 0, agc = 0;
         bsp_as5600_magnet_ok(&st);
         bsp_as5600_read_agc(&agc);
-        bsp_printf("%5lu  누적 %6ld.%ld deg   raw %4u   MD=%d AGC=%3u\r\n",
-                   (unsigned long)n++, (long)(deg10 / 10), (long)labs(deg10 % 10),
-                   enc_prev, (st >> 5) & 1, agc);
-        bsp_led_toggle();
+        bsp_printf("엔코더 정지 상태: MD=%d AGC=%u  (PWM 없을 때 기준값)\r\n", (st >> 5) & 1, agc);
     }
+
+    /* 시리얼로 's' 를 받아야 통전한다. 12V 연결을 확인한 뒤에만 돌게 */
+    bsp_uart_puts("[확인] 12V / 전류 리밋 0.8A / 무부하 / 고정. 시작하려면 's' 전송\r\n");
+    extern UART_HandleTypeDef huart2;
+    uint8_t ch = 0;
+    while (ch != 's') {
+        if (HAL_UART_Receive(&huart2, &ch, 1, 500) != HAL_OK) { ch = 0; bsp_led_toggle(); }
+    }
+    for (int i = 3; i > 0; i--) { bsp_printf("  %d...\r\n", i); HAL_Delay(1000); }
+
+    bsp_pwm_start();
+
+    /* 정렬: 벡터 0 에 로터를 붙이고 그 지점을 기계각 0 으로 삼는다 */
+    bsp_pwm_set_vector(0.0f, M_AMP);
+    HAL_Delay(800);
+    enc_zero();
+
+    /* 부호 판정: 전기 1바퀴(기계 51.4도) 돌려 엔코더 방향 확인 */
+    bsp_uart_puts("\r\n[부호 판정] 전기 360도 = 기계 51.4도 회전\r\n");
+    int32_t cmd10 = sweep(0.0f, 360.0f, 300.0f, 0, +1);
+    int sign = (enc_acc >= 0) ? +1 : -1;
+    bsp_printf("-> 엔코더 부호 %+d, 측정 %ld.%ld도 (기대 51.4)\r\n\r\n",
+               sign, (long)(sign * cnt_to_deg10(enc_acc) / 10),
+               (long)labs(cnt_to_deg10(enc_acc) % 10));
+
+    /* 본 실험: 기계 1바퀴씩 두 속도로 정방향, 이어 1바퀴 역방향 */
+    bsp_uart_puts("[속도 1] 전기 400 dps = 기계 57 dps, 기계 1바퀴\r\n");
+    cmd10 = sweep(360.0f, 360.0f + 2520.0f, 400.0f, cmd10, sign);
+
+    bsp_uart_puts("\r\n[속도 2] 전기 1200 dps = 기계 171 dps, 기계 1바퀴\r\n");
+    cmd10 = sweep(360.0f + 2520.0f, 360.0f + 5040.0f, 1200.0f, cmd10, sign);
+
+    bsp_uart_puts("\r\n[역방향] 전기 800 dps, 기계 1바퀴\r\n");
+    cmd10 = sweep(360.0f + 5040.0f, 360.0f + 2520.0f, 800.0f, cmd10, sign);
+
+    bsp_pwm_stop();
+
+    int32_t enc10 = sign * cnt_to_deg10(enc_acc);
+    bsp_uart_puts("\r\nPWM 정지. 최종:\r\n");
+    bsp_printf("  누적 명령 %ld.%ld도 / 누적 실측 %ld.%ld도 / 오차 %ld.%ld도\r\n",
+               (long)(cmd10 / 10), (long)labs(cmd10 % 10),
+               (long)(enc10 / 10), (long)labs(enc10 % 10),
+               (long)((cmd10 - enc10) / 10), (long)labs((cmd10 - enc10) % 10));
+    bsp_uart_puts("err 가 속도에 따라 커졌다 줄어드는 것 = 부하각 δ. FOC 가 없앨 대상.\r\n");
+
+    while (1) { bsp_led_toggle(); HAL_Delay(1000); }
 }
