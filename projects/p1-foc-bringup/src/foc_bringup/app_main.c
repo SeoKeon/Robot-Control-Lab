@@ -10,7 +10,10 @@
  *    부하각이 항상 최대토크 각(90도)에 고정 -> 오픈루프와 달리 부하가 걸려도
  *    탈조하지 않아야 한다. 전류 센서 없이 전압 크기 m 으로 토크를 정한다.
  *
- * 통전은 시리얼 's' 수신 후. 'q' 를 받으면 즉시 정지.
+ * 시리얼 명령으로 단계별 실행 (사람이 손을 대는 단계를 분리하려고):
+ *   c = 캘리브레이션만, r = 손 안 대는 주행, b = 브레이크 테스트(정방향 20s)
+ *   r/b 를 처음 받으면 캘리브레이션부터 한다. 실행 중 'q' 면 즉시 정지.
+ *   실행 사이에는 PWM off (로터 자유), 오프셋은 RAM 에 유지.
  * 실행 전: 12V / 전류 리밋 0.8A / 무부하 / 모터·엔코더 고정
  */
 #include "bsp.h"
@@ -191,23 +194,10 @@ static void coast(uint32_t ms)
     while (HAL_GetTick() - t0 < ms) { enc_update(); HAL_Delay(2); }
 }
 
-void app_main(void)
+static int g_calibrated = 0;
+
+static void do_calibration(void)
 {
-    bsp_uart_puts("\r\n=== offset calibration + encoder commutation ===\r\n");
-    {
-        uint8_t st = 0, agc = 0;
-        bsp_as5600_magnet_ok(&st);
-        bsp_as5600_read_agc(&agc);
-        bsp_printf("엔코더: MD=%d AGC=%u\r\n", (st >> 5) & 1, agc);
-    }
-    bsp_uart_puts("[확인] 12V / 전류 리밋 0.8A / 무부하 / 고정. 시작하려면 's' 전송\r\n");
-    uint8_t ch = 0;
-    while (ch != 's') {
-        if (HAL_UART_Receive(&huart2, &ch, 1, 500) != HAL_OK) { ch = 0; bsp_led_toggle(); }
-    }
-
-    bsp_pwm_start();
-
     /* ---- 캘리브레이션 2회 ---- */
     float off[2], spr, hys, span;
     for (int r = 0; r < 2; r++) {
@@ -225,17 +215,55 @@ void app_main(void)
         bsp_printf("\r\n=> 오프셋 확정 %s deg(전기)  (1회차-2회차 차이 %s)\r\n",
                    f1(g_off * RAD2DEG, b1), f1(dsum * RAD2DEG, b2));
     }
+    g_calibrated = 1;
+}
 
-    /* ---- 정류 ---- */
+/* r: 손 안 대는 주행 */
+static void do_handsoff_run(void)
+{
     int ok = 0;
-    ok |= run_commutation(0.25f, +1, 5000u,  "정류 1: 저속 정방향 (보기만)");
-    if (ok == 0) { ok |= run_commutation(0.30f, +1, 10000u, "정류 2: 정방향 (손가락 브레이크 테스트)"); }
+    ok |= run_commutation(0.25f, +1, 5000u, "정류 1: 저속 정방향");
+    if (ok == 0) { ok |= run_commutation(0.30f, +1, 5000u, "정류 2: 정방향"); }
     if (ok == 0) { coast(1500u); }
-    if (ok == 0) { ok |= run_commutation(0.30f, -1, 5000u,  "정류 3: 역방향 (손 떼기)"); }
+    if (ok == 0) { ok |= run_commutation(0.30f, -1, 5000u, "정류 3: 역방향"); }
+}
 
-    coast(800u);
-    bsp_pwm_stop();
-    bsp_uart_puts("\r\nPWM 정지 (6게이트 off). 끝.\r\n");
+/* b: 브레이크 테스트 — 정방향으로 계속 돈다. 이 동안 아무 때나 손가락으로 누른다 */
+static void do_brake_test(void)
+{
+    run_commutation(0.30f, +1, 20000u, "브레이크 테스트: 정방향 20s — 아무 때나 눌러보세요");
+}
 
-    while (1) { bsp_led_toggle(); HAL_Delay(1000); }
+static void wait_cmd(uint8_t *ch)
+{
+    *ch = 0;
+    while (HAL_UART_Receive(&huart2, ch, 1, 500) != HAL_OK) { bsp_led_toggle(); }
+}
+
+void app_main(void)
+{
+    bsp_uart_puts("\r\n=== offset calibration + encoder commutation ===\r\n");
+    {
+        uint8_t st = 0, agc = 0;
+        bsp_as5600_magnet_ok(&st);
+        bsp_as5600_read_agc(&agc);
+        bsp_printf("엔코더: MD=%d AGC=%u\r\n", (st >> 5) & 1, agc);
+    }
+    bsp_uart_puts("[확인] 12V / 전류 리밋 0.8A / 무부하 / 고정\r\n");
+
+    /* 명령 대기 루프. 실행 사이에는 PWM 을 끈다(로터 자유). 오프셋은 RAM 에 유지 */
+    while (1) {
+        bsp_uart_puts("\r\n명령: c=캘리브레이션  r=손 안 대는 주행  b=브레이크 테스트(20s)  (실행 중 q=정지)\r\n");
+        uint8_t ch;
+        wait_cmd(&ch);
+        if (ch != 'c' && ch != 'r' && ch != 'b') { continue; }
+
+        bsp_pwm_start();
+        if (ch == 'c' || !g_calibrated) { do_calibration(); }
+        if (ch == 'r') { do_handsoff_run(); }
+        if (ch == 'b') { do_brake_test(); }
+        coast(800u);
+        bsp_pwm_stop();
+        bsp_uart_puts("PWM 정지 (6게이트 off)\r\n");
+    }
 }
