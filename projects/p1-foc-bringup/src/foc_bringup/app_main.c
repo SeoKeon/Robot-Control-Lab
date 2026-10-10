@@ -7,6 +7,11 @@
  *         손가락으로 누르면 iq 증가. 정지 시 iq ≈ Vq/R = 0.5·m·12V / 10.5Ω.
  *   "iq 샘플 σ" 는 평균 전 한 샘플의 흔들림 — 전류 루프가 매 주기 보게 될 노이즈.
  *
+ * 각도 지연 보정: 부팅 시 AS5600 필터를 SF=2x 로 바꾸고, 남은 지연은
+ *   θ_보정 = θ + ω·τ 로 앞당긴다 (ω 는 사이클 카운터 기반 속도 추정 + 5 ms 평활).
+ *   'x' 가 τ 를 0 / 0.4 / 0.8 / 1.2 ms 로 바꿔가며 무부하 id 를 잰다 — id 가 0 을
+ *   지나는 τ 가 실제 지연이다.
+ *
  * (이전 단계: 오프셋 캘리브레이션 + 정류 단독 = 커밋 2587dce)
  *
  * 1) 캘리브레이션: 엔코더 0도와 자석(d축) 0도의 차이를 잰다.
@@ -42,6 +47,11 @@
 #define RPM_LIMIT   1200      /* 이보다 빠르면 정지 (안전) */
 
 extern UART_HandleTypeDef huart2;
+
+/* 각도 외삽: θ_보정 = θ + ω·τ. 엔코더 각도가 τ 만큼 늦게 오는 것을 보정한다.
+   2026-10-10 실측: AS5600 SF=2x 에서 약 0.85 ms (대부분 I2C 읽기) */
+#define W_FILT_S    0.005f    /* 속도 평활 시정수 5 ms */
+static float g_tau = 0.0f;    /* [s] */
 
 /* ---------------- 엔코더: 절대각 + 언랩 누적 ---------------- */
 static uint16_t enc_raw;     /* 마지막 raw (절대각) */
@@ -210,9 +220,27 @@ static int run_commutation(float m, int lead, uint32_t ms, const char *label)
     int32_t  acc_log = enc_acc;
     double   s_id = 0, s_iq = 0, s_iq2 = 0;
 
+    /* 속도 추정: 루프 간격은 사이클 카운터로(µs 단위), 엔코더 변화량은 누적 카운트로 */
+    uint32_t cyc_prev = DWT->CYCCNT;
+    int32_t  acc_prev = enc_acc;
+    float    w_e      = 0.0f;           /* 전기 각속도 [rad/s], 평활 */
+
     while (HAL_GetTick() - t0 < ms) {
         enc_update();
-        float the = (float)g_sign * (float)PP * mech_rad() + g_off;
+
+        uint32_t cyc = DWT->CYCCNT;
+        float dt_s = (float)(cyc - cyc_prev) / (float)SystemCoreClock;
+        cyc_prev = cyc;
+        if (dt_s > 0.0f) {
+            float w_inst = (float)(enc_acc - acc_prev) * (TWO_PI / (float)CPR) / dt_s
+                           * (float)g_sign * (float)PP;
+            float a = dt_s / (W_FILT_S + dt_s);          /* 1차 저역통과 */
+            w_e += a * (w_inst - w_e);
+        }
+        acc_prev = enc_acc;
+
+        /* 엔코더 각도는 g_tau 만큼 늦다 -> 그동안 더 돌아간 만큼 앞당긴다 */
+        float the = (float)g_sign * (float)PP * mech_rad() + g_off + w_e * g_tau;
         bsp_pwm_set_vector(the + (float)lead * HALF_PI, m);
 
         float id, iq;
@@ -341,8 +369,29 @@ static void do_filter_compare(void)
         bsp_as5600_set_filter(FILTERS[k].sf, FILTERS[k].fth, &conf);
         ok = run_commutation(0.30f, +1, 4000u, FILTERS[k].name);
     }
-    bsp_as5600_set_filter(0u, 0u, &conf);
-    bsp_printf("\r\n필터 기본값 복귀 (CONF=0x%04X)\r\n", conf);
+    bsp_as5600_set_filter(3u, 0u, &conf);
+    bsp_printf("\r\n필터 SF=2x 로 복귀 (CONF=0x%04X)\r\n", conf);
+}
+
+/* x: 각도 외삽 τ 를 바꿔가며 무부하 id 를 잰다. id 가 0 을 지나는 τ = 실제 지연 */
+static void do_tau_sweep(void)
+{
+    static const float taus_ms[] = { 0.0f, 0.4f, 0.8f, 1.2f };
+    char b1[16], name[48];
+    int ok = 0;
+
+    bsp_uart_puts("\r\n[τ 스윕] 엔코더 필터 SF=2x, m=0.30, 각 3s\r\n");
+    for (uint32_t k = 0; k < sizeof(taus_ms) / sizeof(taus_ms[0]) && ok == 0; k++) {
+        g_tau = taus_ms[k] / 1000.0f;
+        snprintf(name, sizeof name, "정방향 tau=%s ms", f1(taus_ms[k], b1));
+        ok = run_commutation(0.30f, +1, 3000u, name);
+    }
+    if (ok == 0) {
+        coast(1500u);
+        g_tau = 0.8f / 1000.0f;
+        ok = run_commutation(0.30f, -1, 3000u, "역방향 tau=0.8 ms");
+    }
+    g_tau = 0.0f;
 }
 
 static void wait_cmd(uint8_t *ch)
@@ -367,12 +416,24 @@ void app_main(void)
     int r = bsp_cs_init(&tc);
     bsp_printf("ADC 트리거 정렬: %s (CNT=%lu)\r\n", r == 0 ? "꼭대기 OK" : "실패 !!", (unsigned long)tc);
 
+    /* 루프 간격을 µs 단위로 재려고 사이클 카운터를 켠다 */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+
+    /* AS5600 필터를 2x 로 (기본 16x 는 회전 중 각도를 약 1.7 ms 늦게 준다). 휘발성이라 매 부팅 */
+    {
+        uint16_t conf = 0;
+        int fr = bsp_as5600_set_filter(3u, 0u, &conf);
+        bsp_printf("엔코더 필터 SF=2x: %s (CONF=0x%04X)\r\n", fr == 0 ? "OK" : "실패 !!", conf);
+    }
+
     /* 명령 대기 루프. 실행 사이에는 PWM 을 끈다(로터 자유). 오프셋은 RAM 에 유지 */
     while (1) {
-        bsp_uart_puts("\r\n명령: c=캘리브레이션  r=손 안 대는 주행  b=브레이크 테스트(20s)  f=엔코더 필터 비교  (실행 중 q=정지)\r\n");
+        bsp_uart_puts("\r\n명령: c=캘리브레이션  r=손 안 대는 주행  b=브레이크 테스트(20s)  f=엔코더 필터 비교  x=각도 외삽 τ 스윕  (실행 중 q=정지)\r\n");
         uint8_t ch;
         wait_cmd(&ch);
-        if (ch != 'c' && ch != 'r' && ch != 'b' && ch != 'f') { continue; }
+        if (ch != 'c' && ch != 'r' && ch != 'b' && ch != 'f' && ch != 'x') { continue; }
 
         measure_cs_offset();   /* PWM off 인 지금 영점을 새로 잰다 (온도 드리프트 대비) */
         bsp_pwm_start();
@@ -380,6 +441,7 @@ void app_main(void)
         if (ch == 'r') { do_handsoff_run(); }
         if (ch == 'b') { do_brake_test(); }
         if (ch == 'f') { do_filter_compare(); }
+        if (ch == 'x') { do_tau_sweep(); }
         coast(800u);
         bsp_pwm_stop();
         bsp_uart_puts("PWM 정지 (6게이트 off)\r\n");
