@@ -1,143 +1,241 @@
 /**
- * p1 — 오픈루프 연속 회전 + 엔코더 로깅 (명령각 vs 실제각)
+ * p1 — 전기각 오프셋 캘리브레이션 + 엔코더 기반 정류 (전압 모드 FOC)
  *
- * 오픈루프로 벡터를 돌리면서 AS5600 으로 로터 실제 각도를 같이 읽는다.
- * "명령각 - 실제각" 오차에 부하각(δ/극쌍수)과 추종 지연이 그대로 드러난다.
- * FOC 직전의 마지막 관측 실험.
+ * 1) 캘리브레이션: 엔코더 0도와 자석(d축) 0도의 차이를 잰다.
+ *    전기각을 30도씩 앞으로 한 바퀴, 뒤로 한 바퀴 돌리며 매 위치에서
+ *      offset_k = θe_k − sign·PP·θm_k
+ *    를 구해 원형 평균한다. 앞뒤 마찰 지연이 서로 상쇄된다. 2회 반복해 재현성 확인.
  *
- * 2차 실행 (2026-10-10, 지그 장착): 자석은 플러그에 접착·압입, 스페이서 1mm 로
- *   MD=1 / AGC=21 (이전 테이프 고정 때 MD=0 / AGC=128). 무전원 손돌리기에서
- *   737.1도 = 720 + 17.1(raw 차) 로 바퀴 수 정확히 일치 -> 센서·언랩은 깨끗하다.
- *   남은 의심은 PWM 자기장 간섭 하나 — 그래서 회전 중 AGC 를 같이 찍는다.
+ * 2) 정류: 매 루프 엔코더로 전기각을 계산하고 벡터를 θe ± 90도에 세운다.
+ *    부하각이 항상 최대토크 각(90도)에 고정 -> 오픈루프와 달리 부하가 걸려도
+ *    탈조하지 않아야 한다. 전류 센서 없이 전압 크기 m 으로 토크를 정한다.
  *
- * 시리얼로 's' 를 받아야 통전한다 (12V 연결 확인 후 시작).
- * 실행 전: 12V / 전류 리밋 0.8A / 무부하 / 모터·엔코더 고정 / 선 연속회전 OK
+ * 통전은 시리얼 's' 수신 후. 'q' 를 받으면 즉시 정지.
+ * 실행 전: 12V / 전류 리밋 0.8A / 무부하 / 모터·엔코더 고정
  */
 #include "bsp.h"
+#include <math.h>
 #include <stdlib.h>
+#include <stdio.h>
 
-#define POLE_PAIRS   7
-#define M_AMP        0.45f
-#define TICK_MS      2u                 /* 벡터 갱신 500Hz */
-#define LOG_EVERY    50u                /* 100ms 마다 로그 */
-#define TWO_PI       6.2831853f
-#define CPR          4096
+#define PP          7
+#define CPR         4096
+#define TWO_PI      6.2831853f
+#define HALF_PI     1.5707963f
+#define RAD2DEG     57.295780f
+#define DEG2RAD     0.01745329f
 
-/* ---- 엔코더 언랩: 랩어라운드를 누적각으로 ---- */
-static uint16_t enc_prev;
-static int32_t  enc_acc;    /* counts, 시작점 기준 누적 */
+#define CAL_M       0.45f     /* 캘리브레이션 벡터 크기 (오픈루프 실험에서 검증된 값) */
+#define CAL_STEPS   12        /* 30도 간격 */
+#define CAL_HOLD_MS 250u
+#define RPM_LIMIT   1200      /* 이보다 빠르면 정지 (안전) */
 
-static void enc_zero(void)
+extern UART_HandleTypeDef huart2;
+
+/* ---------------- 엔코더: 절대각 + 언랩 누적 ---------------- */
+static uint16_t enc_raw;     /* 마지막 raw (절대각) */
+static int32_t  enc_acc;     /* 누적 카운트 (속도 계산용) */
+
+static void enc_init(void)
 {
     uint16_t r = 0;
     bsp_as5600_read_raw(&r);
-    enc_prev = r;
-    enc_acc  = 0;
+    enc_raw = r;
+    enc_acc = 0;
 }
 
-static int32_t enc_update(void)   /* 호출할 때마다 읽고 누적 */
+static void enc_update(void)
 {
     uint16_t r = 0;
     if (bsp_as5600_read_raw(&r) == 0) {
-        int32_t d = (int32_t)r - (int32_t)enc_prev;
+        int32_t d = (int32_t)r - (int32_t)enc_raw;
         if (d >  CPR / 2) { d -= CPR; }
         if (d < -CPR / 2) { d += CPR; }
         enc_acc += d;
-        enc_prev = r;
+        enc_raw  = r;
     }
-    return enc_acc;
 }
 
-/* counts -> 기계각 x10 [deg*10] */
-static int32_t cnt_to_deg10(int32_t c) { return (c * 3600) / CPR; }
-
-/**
- * 전기각 el_from -> el_to [deg] 를 el_dps 속도로 돌리며 로깅.
- * cmd0_deg10: 이 구간 시작 시점의 누적 명령 기계각 x10 (연속 표시용)
- * sign: 엔코더 부호 (+1/-1, 명령 방향과 맞추기)
- */
-static int32_t sweep(float el_from, float el_to, float el_dps,
-                     int32_t cmd0_deg10, int sign)
+static float wrap_pi(float a)
 {
-    const float step = el_dps * ((float)TICK_MS / 1000.0f);
-    const float dir  = (el_to > el_from) ? 1.0f : -1.0f;
-    float    el   = el_from;
-    uint32_t tick = 0;
+    while (a >  3.1415927f) { a -= TWO_PI; }
+    while (a < -3.1415927f) { a += TWO_PI; }
+    return a;
+}
 
-    while ((dir > 0.0f && el < el_to) || (dir < 0.0f && el > el_to)) {
-        bsp_pwm_set_vector(el * 0.01745329f, M_AMP);
+static float mech_rad(void) { return (float)enc_raw * (TWO_PI / (float)CPR); }
+
+/* 정지 상태 n 회 원형 평균 [rad] */
+static float mech_avg(int n)
+{
+    float s = 0.0f, c = 0.0f;
+    for (int i = 0; i < n; i++) {
         enc_update();
-
-        if (++tick % LOG_EVERY == 0u) {
-            int32_t cmd10 = cmd0_deg10 + (int32_t)((el - el_from) * 10.0f / POLE_PAIRS);
-            int32_t enc10 = sign * cnt_to_deg10(enc_acc);
-            uint8_t agc = 0;
-            bsp_as5600_read_agc(&agc);   /* PWM 간섭이 있으면 회전 중 AGC 가 출렁인다 */
-            bsp_printf("cmd %6ld.%ld  enc %6ld.%ld  err %5ld.%ld  AGC %3u\r\n",
-                       (long)(cmd10 / 10), (long)labs(cmd10 % 10),
-                       (long)(enc10 / 10), (long)labs(enc10 % 10),
-                       (long)((cmd10 - enc10) / 10), (long)labs((cmd10 - enc10) % 10),
-                       agc);
-        }
-        HAL_Delay(TICK_MS);
-        el += dir * step;
+        float t = mech_rad();
+        s += sinf(t);
+        c += cosf(t);
+        HAL_Delay(3);
     }
-    return cmd0_deg10 + (int32_t)((el_to - el_from) * 10.0f / POLE_PAIRS);
+    return atan2f(s, c);
+}
+
+/* 소수 1자리 문자열 (nano printf 에 %f 가 없어서). 버퍼는 호출마다 따로 */
+static const char *f1(float x, char *b)
+{
+    long t = lroundf(x * 10.0f);
+    snprintf(b, 16, "%s%ld.%ld", (t < 0) ? "-" : "", labs(t) / 10, labs(t) % 10);
+    return b;
+}
+
+static int quit_requested(void)
+{
+    uint8_t ch = 0;
+    return (HAL_UART_Receive(&huart2, &ch, 1, 0) == HAL_OK) && (ch == 'q');
+}
+
+/* ---------------- 캘리브레이션 ---------------- */
+static int   g_sign = +1;
+static float g_off  = 0.0f;   /* rad, 전기각 */
+
+static void hold_and_track(float the, uint32_t ms)
+{
+    bsp_pwm_set_vector(the, CAL_M);
+    uint32_t t0 = HAL_GetTick();
+    while (HAL_GetTick() - t0 < ms) { enc_update(); HAL_Delay(2); }
+}
+
+/* 결과: 오프셋[rad], 흩어짐[deg 전기], 앞/뒤 평균 차[deg 전기], 1바퀴 기계 이동[deg] */
+static void calibrate(float *off, float *spread_deg, float *hyst_deg, float *span_deg)
+{
+    float th[2 * CAL_STEPS + 2], tm[2 * CAL_STEPS + 2];
+    int   n = 0;
+
+    /* 0 에 정렬 */
+    hold_and_track(0.0f, 700u);
+    enc_init();
+    int32_t acc0 = enc_acc;
+
+    /* 앞으로: 30 .. 360 */
+    for (int k = 1; k <= CAL_STEPS; k++) {
+        float the = TWO_PI * (float)k / (float)CAL_STEPS;
+        hold_and_track(the, CAL_HOLD_MS);
+        th[n] = the; tm[n] = mech_avg(6); n++;
+    }
+    *span_deg = (float)(enc_acc - acc0) * 360.0f / (float)CPR;
+    g_sign = (*span_deg >= 0.0f) ? +1 : -1;
+
+    /* 뒤로: 330 .. 0 */
+    for (int k = CAL_STEPS - 1; k >= 0; k--) {
+        float the = TWO_PI * (float)k / (float)CAL_STEPS;
+        hold_and_track(the, CAL_HOLD_MS);
+        th[n] = the; tm[n] = mech_avg(6); n++;
+    }
+
+    /* 오프셋 원형 평균 (전체 / 앞 / 뒤) */
+    float s = 0, c = 0, sf = 0, cf = 0, sb = 0, cb = 0;
+    float o[2 * CAL_STEPS + 2];
+    for (int i = 0; i < n; i++) {
+        o[i] = wrap_pi(th[i] - (float)g_sign * (float)PP * tm[i]);
+        s += sinf(o[i]); c += cosf(o[i]);
+        if (i < CAL_STEPS) { sf += sinf(o[i]); cf += cosf(o[i]); }
+        else               { sb += sinf(o[i]); cb += cosf(o[i]); }
+    }
+    *off = atan2f(s, c);
+
+    float mx = 0.0f;
+    for (int i = 0; i < n; i++) {
+        float d = fabsf(wrap_pi(o[i] - *off)) * RAD2DEG;
+        if (d > mx) { mx = d; }
+    }
+    *spread_deg = mx;
+    *hyst_deg   = wrap_pi(atan2f(sf, cf) - atan2f(sb, cb)) * RAD2DEG;
+}
+
+/* ---------------- 정류 (엔코더 기반) ---------------- */
+static int run_commutation(float m, int lead, uint32_t ms, const char *label)
+{
+    bsp_printf("\r\n[%s] m=%d%%  lead %c90deg  %lus\r\n",
+               label, (int)(m * 100.0f), lead > 0 ? '+' : '-', (unsigned long)(ms / 1000u));
+
+    uint32_t t0 = HAL_GetTick(), tlog = t0, loops = 0;
+    int32_t  acc_log = enc_acc;
+
+    while (HAL_GetTick() - t0 < ms) {
+        enc_update();
+        float the = (float)g_sign * (float)PP * mech_rad() + g_off;
+        bsp_pwm_set_vector(the + (float)lead * HALF_PI, m);
+        loops++;
+
+        uint32_t now = HAL_GetTick();
+        if (now - tlog >= 100u) {
+            float dt  = (float)(now - tlog) / 1000.0f;
+            float dps = (float)(enc_acc - acc_log) * 360.0f / (float)CPR / dt;
+            float rpm = dps / 6.0f;
+            char b1[16];
+            bsp_printf("  t %5lu ms  rpm %7s  loop %4lu Hz\r\n",
+                       (unsigned long)(now - t0), f1(rpm, b1), (unsigned long)((float)loops / dt));
+            acc_log = enc_acc; tlog = now; loops = 0;
+
+            if (fabsf(rpm) > (float)RPM_LIMIT) { bsp_uart_puts("  !! 속도 한계 초과 — 정지\r\n"); return -1; }
+            if (quit_requested())              { bsp_uart_puts("  !! 'q' 수신 — 정지\r\n");      return -1; }
+        }
+    }
+    return 0;
+}
+
+/* 단계 사이: 3상 같은 듀티(전압 0) = 권선 단락 브레이크로 감속 */
+static void coast(uint32_t ms)
+{
+    bsp_pwm_set_vector(0.0f, 0.0f);
+    uint32_t t0 = HAL_GetTick();
+    while (HAL_GetTick() - t0 < ms) { enc_update(); HAL_Delay(2); }
 }
 
 void app_main(void)
 {
-    bsp_uart_puts("\r\n=== open-loop + encoder logging ===\r\n");
+    bsp_uart_puts("\r\n=== offset calibration + encoder commutation ===\r\n");
     {
         uint8_t st = 0, agc = 0;
         bsp_as5600_magnet_ok(&st);
         bsp_as5600_read_agc(&agc);
-        bsp_printf("엔코더 정지 상태: MD=%d AGC=%u  (PWM 없을 때 기준값)\r\n", (st >> 5) & 1, agc);
+        bsp_printf("엔코더: MD=%d AGC=%u\r\n", (st >> 5) & 1, agc);
     }
-
-    /* 시리얼로 's' 를 받아야 통전한다. 12V 연결을 확인한 뒤에만 돌게 */
     bsp_uart_puts("[확인] 12V / 전류 리밋 0.8A / 무부하 / 고정. 시작하려면 's' 전송\r\n");
-    extern UART_HandleTypeDef huart2;
     uint8_t ch = 0;
     while (ch != 's') {
         if (HAL_UART_Receive(&huart2, &ch, 1, 500) != HAL_OK) { ch = 0; bsp_led_toggle(); }
     }
-    for (int i = 3; i > 0; i--) { bsp_printf("  %d...\r\n", i); HAL_Delay(1000); }
 
     bsp_pwm_start();
 
-    /* 정렬: 벡터 0 에 로터를 붙이고 그 지점을 기계각 0 으로 삼는다 */
-    bsp_pwm_set_vector(0.0f, M_AMP);
-    HAL_Delay(800);
-    enc_zero();
+    /* ---- 캘리브레이션 2회 ---- */
+    float off[2], spr, hys, span;
+    for (int r = 0; r < 2; r++) {
+        bsp_printf("\r\n[캘리브레이션 %d/2] 30도씩 앞으로 1바퀴, 뒤로 1바퀴\r\n", r + 1);
+        calibrate(&off[r], &spr, &hys, &span);
+        char b1[16], b2[16], b3[16];
+        bsp_printf("  1바퀴 기계 이동 %s deg (기대 51.4) -> 부호 %+d\r\n", f1(span, b1), g_sign);
+        bsp_printf("  오프셋 %s deg(전기)  흩어짐 최대 %s  앞뒤 차 %s\r\n",
+                   f1(off[r] * RAD2DEG, b1), f1(spr, b2), f1(hys, b3));
+    }
+    float dsum = wrap_pi(off[1] - off[0]);
+    g_off = wrap_pi(off[0] + 0.5f * dsum);
+    {
+        char b1[16], b2[16];
+        bsp_printf("\r\n=> 오프셋 확정 %s deg(전기)  (1회차-2회차 차이 %s)\r\n",
+                   f1(g_off * RAD2DEG, b1), f1(dsum * RAD2DEG, b2));
+    }
 
-    /* 부호 판정: 전기 1바퀴(기계 51.4도) 돌려 엔코더 방향 확인 */
-    bsp_uart_puts("\r\n[부호 판정] 전기 360도 = 기계 51.4도 회전\r\n");
-    int32_t cmd10 = sweep(0.0f, 360.0f, 300.0f, 0, +1);
-    int sign = (enc_acc >= 0) ? +1 : -1;
-    bsp_printf("-> 엔코더 부호 %+d, 측정 %ld.%ld도 (기대 51.4)\r\n\r\n",
-               sign, (long)(sign * cnt_to_deg10(enc_acc) / 10),
-               (long)labs(cnt_to_deg10(enc_acc) % 10));
+    /* ---- 정류 ---- */
+    int ok = 0;
+    ok |= run_commutation(0.25f, +1, 5000u,  "정류 1: 저속 정방향 (보기만)");
+    if (ok == 0) { ok |= run_commutation(0.30f, +1, 10000u, "정류 2: 정방향 (손가락 브레이크 테스트)"); }
+    if (ok == 0) { coast(1500u); }
+    if (ok == 0) { ok |= run_commutation(0.30f, -1, 5000u,  "정류 3: 역방향 (손 떼기)"); }
 
-    /* 본 실험: 기계 1바퀴씩 두 속도로 정방향, 이어 1바퀴 역방향 */
-    bsp_uart_puts("[속도 1] 전기 400 dps = 기계 57 dps, 기계 1바퀴\r\n");
-    cmd10 = sweep(360.0f, 360.0f + 2520.0f, 400.0f, cmd10, sign);
-
-    bsp_uart_puts("\r\n[속도 2] 전기 1200 dps = 기계 171 dps, 기계 1바퀴\r\n");
-    cmd10 = sweep(360.0f + 2520.0f, 360.0f + 5040.0f, 1200.0f, cmd10, sign);
-
-    bsp_uart_puts("\r\n[역방향] 전기 800 dps, 기계 1바퀴\r\n");
-    cmd10 = sweep(360.0f + 5040.0f, 360.0f + 2520.0f, 800.0f, cmd10, sign);
-
+    coast(800u);
     bsp_pwm_stop();
-
-    int32_t enc10 = sign * cnt_to_deg10(enc_acc);
-    bsp_uart_puts("\r\nPWM 정지. 최종:\r\n");
-    bsp_printf("  누적 명령 %ld.%ld도 / 누적 실측 %ld.%ld도 / 오차 %ld.%ld도\r\n",
-               (long)(cmd10 / 10), (long)labs(cmd10 % 10),
-               (long)(enc10 / 10), (long)labs(enc10 % 10),
-               (long)((cmd10 - enc10) / 10), (long)labs((cmd10 - enc10) % 10));
-    bsp_uart_puts("err 가 속도에 따라 커졌다 줄어드는 것 = 부하각 δ. FOC 가 없앨 대상.\r\n");
+    bsp_uart_puts("\r\nPWM 정지 (6게이트 off). 끝.\r\n");
 
     while (1) { bsp_led_toggle(); HAL_Delay(1000); }
 }
