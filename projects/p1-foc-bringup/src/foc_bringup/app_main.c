@@ -299,9 +299,7 @@ static int run_commutation(float m, int lead, uint32_t ms, const char *label)
 
 #define J_KGM2    5.0e-6f     /* 로터 관성 (추정) */
 #define KT_NM_A   (1.5f * (float)PP * PSI_V_S)   /* 토크 상수 ≈ 0.086 N·m/A */
-#define WC_SPD    (TWO_PI * 5.0f)                /* 속도 루프 목표 대역폭 [rad/s] */
-#define KP_W      (J_KGM2 * WC_SPD / KT_NM_A)    /* [A per rad/s 기계] ≈ 1.8e-3 */
-#define KI_W      (KP_W * WC_SPD / 4.0f)         /* [A per rad 기계] ≈ 0.014 */
+#define BW_SPD_HZ 5.0f        /* 속도 루프 기본 목표 대역폭 → Kp ≈ 1.8e-3 A/(rad/s), Ki ≈ 0.014 A/rad */
 #define IQ_LIM    0.15f       /* 속도 루프가 낼 수 있는 최대 iq [A] */
 
 typedef struct {
@@ -309,6 +307,7 @@ typedef struct {
     int      is_speed;
     uint32_t ms;
     const char *label;
+    float    bw_hz;      /* 속도 루프 대역폭, 0 이면 BW_SPD_HZ */
 } cl_step_t;
 
 static int run_current_loop(const cl_step_t *steps, int n_steps)
@@ -322,9 +321,15 @@ static int run_current_loop(const cl_step_t *steps, int n_steps)
     for (int sidx = 0; sidx < n_steps; sidx++) {
         const cl_step_t *st = &steps[sidx];
         char b0[16];
+        const float wc   = TWO_PI * ((st->bw_hz > 0.0f) ? st->bw_hz : BW_SPD_HZ);
+        const float kp_w = J_KGM2 * wc / KT_NM_A;   /* [A per rad/s 기계] */
+        const float ki_w = kp_w * wc / 4.0f;        /* [A per rad 기계] */
         if (st->is_speed) {
-            bsp_printf("\r\n[%s] 속도 지령 %s rpm (iq 한계 ±%d mA), %lus\r\n",
-                       st->label, f1(st->ref, b0), (int)(IQ_LIM * 1000.0f), (unsigned long)(st->ms / 1000u));
+            char bk[16];
+            bsp_printf("\r\n[%s] 속도 지령 %s rpm, 대역폭 %s Hz (Kp %d.%02d mA/(rad/s)), iq 한계 ±%d mA, %lus\r\n",
+                       st->label, f1(st->ref, b0), f1(wc / TWO_PI, bk),
+                       (int)(kp_w * 1000.0f), (int)(kp_w * 100000.0f) % 100,
+                       (int)(IQ_LIM * 1000.0f), (unsigned long)(st->ms / 1000u));
         } else {
             bsp_printf("\r\n[%s] iq 지령 %s mA, id 지령 0, %lus\r\n",
                        st->label, f1(st->ref * 1000.0f, b0), (unsigned long)(st->ms / 1000u));
@@ -362,10 +367,10 @@ static int run_current_loop(const cl_step_t *steps, int n_steps)
             if (st->is_speed) {
                 float w_m   = w_e / (float)PP;               /* 기계 rad/s (전기 방향 기준) */
                 float e_w   = w_ref - w_m;
-                float iq_un = KP_W * e_w + w_i;
+                float iq_un = kp_w * e_w + w_i;
                 iq_ref = (iq_un > IQ_LIM) ? IQ_LIM : ((iq_un < -IQ_LIM) ? -IQ_LIM : iq_un);
                 int limited = (iq_ref != iq_un);
-                if (!limited || (e_w * iq_ref < 0.0f)) { w_i += KI_W * e_w * dt_s; }
+                if (!limited || (e_w * iq_ref < 0.0f)) { w_i += ki_w * e_w * dt_s; }
             } else {
                 iq_ref = st->ref;
             }
@@ -449,6 +454,18 @@ static void do_speed_steps(void)
         {  200.0f, 1, 3000u, "속도 3: 200 rpm" },
         { -150.0f, 1, 3000u, "속도 4: -150 rpm (역방향)" },
         {    0.0f, 1, 2000u, "속도 5: 0 rpm" },
+    };
+    run_current_loop(seq, (int)(sizeof(seq) / sizeof(seq[0])));
+}
+
+/* v: 대역폭 비교 — 같은 100 rpm 에서 게인만 바꿔 한 바퀴 주기 속도 출렁임이 줄어드는지 */
+static void do_speed_bw_compare(void)
+{
+    static const cl_step_t seq[] = {
+        { 100.0f, 1, 4000u, "대역폭 1: 5 Hz",  5.0f },
+        { 100.0f, 1, 4000u, "대역폭 2: 10 Hz", 10.0f },
+        { 100.0f, 1, 4000u, "대역폭 3: 15 Hz", 15.0f },
+        {   0.0f, 1, 2000u, "대역폭 4: 0 rpm 정지 (15 Hz)", 15.0f },
     };
     run_current_loop(seq, (int)(sizeof(seq) / sizeof(seq[0])));
 }
@@ -626,10 +643,10 @@ void app_main(void)
     while (1) {
         bsp_uart_puts("\r\n명령: c=캘리브레이션  r=손 안 대는 주행  b=브레이크 테스트(20s)  f=엔코더 필터 비교  x=각도 외삽 τ 스윕\r\n"
                       "      i=전류 루프 (손 안 댐)  k=전류 루프 브레이크 테스트(20s)\r\n"
-                      "      s=속도 루프 계단 응답 (손 안 댐)  w=속도 루프 브레이크 테스트(20s)  (실행 중 q=정지)\r\n");
+                      "      s=속도 루프 계단 응답 (손 안 댐)  v=속도 대역폭 비교  w=속도 루프 브레이크 테스트(20s)  (실행 중 q=정지)\r\n");
         uint8_t ch;
         wait_cmd(&ch);
-        if (ch != 'c' && ch != 'r' && ch != 'b' && ch != 'f' && ch != 'x' && ch != 'i' && ch != 'k' && ch != 's' && ch != 'w') { continue; }
+        if (ch != 'c' && ch != 'r' && ch != 'b' && ch != 'f' && ch != 'x' && ch != 'i' && ch != 'k' && ch != 's' && ch != 'v' && ch != 'w') { continue; }
 
         measure_cs_offset();   /* PWM off 인 지금 영점을 새로 잰다 (온도 드리프트 대비) */
         bsp_pwm_start();
@@ -641,6 +658,7 @@ void app_main(void)
         if (ch == 'i') { do_current_loop_handsoff(); }
         if (ch == 'k') { do_current_loop_brake(); }
         if (ch == 's') { do_speed_steps(); }
+        if (ch == 'v') { do_speed_bw_compare(); }
         if (ch == 'w') { do_speed_brake(); }
         coast(800u);
         bsp_pwm_stop();
